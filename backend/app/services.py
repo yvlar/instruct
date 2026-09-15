@@ -1,4 +1,4 @@
-import hashlib
+import uuid
 import re
 from pathlib import Path
 
@@ -67,9 +67,9 @@ class KnowledgeBase:
             with fitz.open(pdf) as doc:
                 for page_number, page in enumerate(doc, start=1):
                     for index, chunk in enumerate(chunk_text(page.get_text())):
-                        digest = hashlib.sha256(f"{pdf}:{page_number}:{index}:{chunk}".encode()).hexdigest()
+                        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{pdf}:{page_number}:{index}:{chunk}"))
                         points.append(models.PointStruct(
-                            id=digest,
+                            id=point_id,
                             vector=await self.embed(chunk),
                             payload={"document": pdf.name, "page": page_number, "text": chunk},
                         ))
