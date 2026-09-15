@@ -1,0 +1,39 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    restart: unless-stopped
+    ports: ["6333:6333"]
+    volumes: [qdrant_data:/qdrant/storage]
+
+  ollama:
+    image: ollama/ollama:0.12.3
+    restart: unless-stopped
+    ports: ["11434:11434"]
+    volumes: [ollama_data:/root/.ollama]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    ports: ["8000:8000"]
+    volumes:
+      - ./documents:/documents:ro
+    depends_on: [qdrant, ollama]
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports: ["3000:80"]
+    depends_on: [backend]
+
+volumes:
+  qdrant_data:
+  ollama_data:
+
