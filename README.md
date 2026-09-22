@@ -1,6 +1,6 @@
 # Instruct IA
 
-[![CI](https://github.com/yvlar/instruct/actions/workflows/ci.yml/badge.svg)](https://github.com/yvlar/instruct/actions/workflows/ci.yml)
+[![CI](https://github.com/yvlar/instruct/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/yvlar/instruct/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
 
