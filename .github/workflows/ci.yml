@@ -23,7 +23,7 @@ jobs:
         run: pip install -r backend/requirements-dev.txt
       - name: Tester le backend
         working-directory: backend
-        run: pytest -q
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -32,9 +32,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Installer les dépendances
         working-directory: frontend
-        run: npm install
+        run: npm ci
       - name: Compiler le frontend
         working-directory: frontend
         run: npm run build
