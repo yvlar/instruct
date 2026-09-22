@@ -33,7 +33,7 @@ pytest -q
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run build
 ```
 
@@ -47,4 +47,3 @@ npm run build
 - acceptez la licence MIT pour votre contribution.
 
 En soumettant une contribution, vous acceptez qu'elle soit distribuée sous la licence MIT du projet.
-
