@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Signaler une vulnérabilité
+    url: https://github.com/yvlar/instruct/security
+    about: N'exposez pas une vulnérabilité dans une issue publique.
+
