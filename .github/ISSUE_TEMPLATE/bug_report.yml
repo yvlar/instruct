@@ -1,0 +1,46 @@
+name: Signaler un bogue
+description: Signaler un comportement reproductible
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Ne joignez aucun document de travail réel, secret ou donnée personnelle."
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Que s'est-il passé et quel résultat attendiez-vous?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Étapes de reproduction
+      placeholder: "1. Démarrer...\n2. Appeler...\n3. Observer..."
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Version ou commit
+  - type: input
+    id: environment
+    attributes:
+      label: Environnement
+      placeholder: Ubuntu, Docker, GPU/CPU
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journaux anonymisés
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Vérifications
+      options:
+        - label: J'ai retiré les secrets, données personnelles et documents confidentiels.
+          required: true
+        - label: Ce signalement ne divulgue pas une vulnérabilité exploitable.
+          required: true
+
