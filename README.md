@@ -19,7 +19,7 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - réponses avec document, page, extrait et score de pertinence;
 - refus explicite lorsque les documents ne contiennent pas la réponse;
 - API FastAPI et interface React/TypeScript;
-- exécution reproductible avec Docker Compose.
+- déploiement conteneurisé avec Docker Compose.
 
 ## Architecture
 
