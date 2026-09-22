@@ -1,11 +1,11 @@
 import uuid
-import re
 from pathlib import Path
 
 import fitz
 import httpx
 from qdrant_client import QdrantClient, models
 
+from .chunking import chunk_text
 from .config import settings
 
 
@@ -17,24 +17,6 @@ Cite les sources dans le texte sous la forme [document, p. X]. Réponds en fran�
 clairement et sans ajouter de connaissance générale. Rappelle de vérifier la version
 officielle du document avant d'exécuter une procédure.
 """
-
-
-def chunk_text(text: str, size: int = 1400, overlap: int = 250) -> list[str]:
-    clean = re.sub(r"\s+", " ", text).strip()
-    if not clean:
-        return []
-    chunks, start = [], 0
-    while start < len(clean):
-        end = min(start + size, len(clean))
-        if end < len(clean):
-            boundary = clean.rfind(". ", start, end)
-            if boundary > start + size // 2:
-                end = boundary + 1
-        chunks.append(clean[start:end])
-        if end == len(clean):
-            break
-        start = max(start + 1, end - overlap)
-    return chunks
 
 
 class KnowledgeBase:
@@ -109,4 +91,3 @@ class KnowledgeBase:
 
 
 knowledge_base = KnowledgeBase()
-
