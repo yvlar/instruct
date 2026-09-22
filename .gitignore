@@ -1,9 +1,36 @@
+# Secrets et configuration locale
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node
 node_modules/
 dist/
-documents/**/*.pdf
+*.tsbuildinfo
+
+# IDE et système
+.DS_Store
+.idea/
+.vscode/
+
+# Aucun document utilisateur ne doit être publié
+documents/**
+!documents/**/
 !documents/**/.gitkeep
 
+# Données locales
+qdrant_storage/
+ollama_data/
