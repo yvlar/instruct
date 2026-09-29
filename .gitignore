@@ -35,6 +35,10 @@ documents/**
 qdrant_storage/
 ollama_data/
 
+# Registre documentaire, archives et versions locales
+.instruct-state/
+frontend/test-results/
+frontend/playwright-report/
 # Local lexical index and benchmark outputs
 data/
 benchmark-results/

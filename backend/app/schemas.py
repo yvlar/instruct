@@ -12,6 +12,8 @@ class Source(BaseModel):
     page: int
     excerpt: str
     score: float
+    document_id: str | None = None
+    version: str | None = None
     revision: str
     fingerprint: str
 

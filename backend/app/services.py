@@ -1,5 +1,6 @@
 import math
 import uuid
+from contextlib import nullcontext
 
 import fitz
 import httpx
@@ -7,6 +8,7 @@ from qdrant_client import QdrantClient, models
 
 from .answering import VERSION_WARNING
 from .config import settings
+from .document_storage import ManagedPdfSource
 from .grounding import (
     SYSTEM_PROMPT,
     GeneratedAnswer,
@@ -20,10 +22,10 @@ from .indexing import (
     SCHEMA_VERSION,
     DocumentError,
     IndexErrorBase,
-    PdfSource,
     RevisionStore,
     active_filter,
     digest,
+    document_id,
     index_lock,
     require_completed,
 )
@@ -36,15 +38,7 @@ class KnowledgeBase:
         self.settings = config or settings
         self._qdrant = qdrant
         self._http = http
-        self.source = (
-            source
-            if source is not None
-            else PdfSource(
-                self.settings.documents_path,
-                self.settings.chunk_size,
-                self.settings.chunk_overlap,
-            )
-        )
+        self.source = source if source is not None else ManagedPdfSource(self.settings)
 
     @property
     def qdrant(self):
@@ -182,9 +176,25 @@ class KnowledgeBase:
             raise DocumentError("NO_TEXT")
         return count
 
-    async def ingest(self, *, allow_empty: bool = False) -> dict:
-        with index_lock(self.settings):
+    async def ingest(
+        self,
+        *,
+        allow_empty: bool = False,
+        only: str | None = None,
+        progress=None,
+        lock_held=False,
+    ) -> dict:
+        def report(stage, processed=0, total=None, document=None):
+            if progress:
+                progress(stage, processed, total, document)
+
+        with nullcontext() if lock_held else index_lock(self.settings):
+            report("Inventaire des PDF")
             inventory = self.source.inventory()
+            if only is not None:
+                if only not in inventory:
+                    raise IndexErrorBase("DOCUMENT_MISSING: document absent.")
+                inventory = {only: inventory[only]}
             control, manifests = self.store.read()
             if not inventory and manifests and not allow_empty:
                 raise IndexErrorBase(
@@ -220,7 +230,8 @@ class KnowledgeBase:
                     "truncate": False,
                 }
             )
-            for document in sorted(inventory):
+            for processed, document in enumerate(sorted(inventory)):
+                report("Vérification du fichier", processed, len(inventory), document)
                 try:
                     try:
                         file_hash = self.source.fingerprint(document)
@@ -229,9 +240,29 @@ class KnowledgeBase:
                     fingerprint = digest([file_hash, signature])
                     previous = manifests.get(document)
                     if previous and previous["fingerprint"] == fingerprint:
+                        # Upgrade old manifests without recomputing embeddings.
+                        if hasattr(self.source, "metadata") and not previous.get(
+                            "file_hash"
+                        ):
+                            self.store.publish(
+                                document,
+                                fingerprint,
+                                previous["revision"],
+                                previous["chunks"],
+                                **self.source.metadata(document, file_hash),
+                            )
                         result["unchanged"] += 1
+                        report(
+                            "Document inchangé", processed + 1, len(inventory), document
+                        )
                         continue
                     revision = digest([document, fingerprint])
+                    report(
+                        "Extraction et embeddings par lots",
+                        processed,
+                        len(inventory),
+                        document,
+                    )
                     count = await self.stage_document(
                         document,
                         file_hash,
@@ -245,7 +276,20 @@ class KnowledgeBase:
                     if await self.embedding_identity() != identity:
                         raise DocumentError("EMBEDDING_MODEL_CHANGED")
                     try:
-                        self.store.publish(document, fingerprint, revision, count)
+                        report(
+                            "Publication des passages",
+                            processed,
+                            len(inventory),
+                            document,
+                        )
+                        metadata = (
+                            self.source.metadata(document, file_hash)
+                            if hasattr(self.source, "metadata")
+                            else {}
+                        )
+                        self.store.publish(
+                            document, fingerprint, revision, count, **metadata
+                        )
                     except Exception as exc:
                         raise DocumentError("MANIFEST_WRITE_FAILED") from exc
                     result["modified" if previous else "added"] += 1
@@ -260,12 +304,18 @@ class KnowledgeBase:
                             else "DOCUMENT_FAILED",
                         }
                     )
+                report("Document traité", processed + 1, len(inventory), document)
             # Never derive deletions from a changing or partially unreadable tree.
-            if self.source.inventory() != inventory:
+            current_inventory = self.source.inventory()
+            if only is not None:
+                current_inventory = (
+                    {only: current_inventory[only]} if only in current_inventory else {}
+                )
+            if current_inventory != inventory:
                 raise IndexErrorBase(
                     "DOCUMENTS_CHANGED: relancez la synchronisation; suppressions annulées."
                 )
-            if not result["failed"]:
+            if not result["failed"] and only is None:
                 for document in sorted(manifests.keys() - inventory.keys()):
                     try:
                         self.store.remove(document)
@@ -277,6 +327,7 @@ class KnowledgeBase:
                         )
             # On an ambiguous write failure keep both versions on disk. A later run
             # re-reads durable manifests and safely cleans interrupted work.
+            report("Nettoyage des anciens passages", len(inventory), len(inventory))
             if control is not None and not result["failed"]:
                 _, committed = self.store.read()
                 try:
@@ -289,6 +340,14 @@ class KnowledgeBase:
     async def retrieve(self, question: str, *, semantic_only=False) -> list[Passage]:
         with index_lock(self.settings, shared=True):
             control, manifests = self.store.read()
+            excluded = (
+                self.source.excluded() if hasattr(self.source, "excluded") else set()
+            )
+            manifests = {
+                path: manifest
+                for path, manifest in manifests.items()
+                if path not in excluded
+            }
             if not manifests:
                 return []
             self.check_identity(control, await self.embedding_identity())
@@ -371,12 +430,19 @@ class KnowledgeBase:
         # A cited revision may have been removed/replaced during local generation.
         with index_lock(self.settings, shared=True):
             _, current = self.store.read()
+            excluded = (
+                self.source.excluded() if hasattr(self.source, "excluded") else set()
+            )
             if any(
-                current.get(source["document"], {}).get("revision")
+                source["document"] in excluded
+                or current.get(source["document"], {}).get("revision")
                 != source["revision"]
                 for source in result["sources"]
             ):
                 return refusal()
+            for source in result["sources"]:
+                source["document_id"] = document_id(source["document"])
+                source["version"] = current[source["document"]].get("file_hash")
         return result
 
 

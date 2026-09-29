@@ -9,7 +9,6 @@ import json
 import re
 import shutil
 import socket
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -135,6 +134,7 @@ def rag(tmp_path, monkeypatch):
         documents_path=str(documents),
         index_lock_path=str(tmp_path / "locks"),
         lexical_index_path=str(tmp_path / "lexical"),
+        document_state_path=str(tmp_path / "state"),
         chunk_size=220,
         chunk_overlap=35,
         embedding_batch_size=2,
@@ -362,14 +362,16 @@ def test_invalid_replacement_preserves_existing_citable_pdf(
         path.write_bytes(b"%PDF-corrupt synthetic fixture")
     else:
         write_pdf(path, ["Synthetic unreadable replacement"])
-        original = Path.open
+        import os
 
-        def deny(self, *args, **kwargs):
-            if self == path:
+        original = os.open
+
+        def deny(name, *args, **kwargs):
+            if name == path.name and kwargs.get("dir_fd") is not None:
                 raise PermissionError("secret filesystem detail")
-            return original(self, *args, **kwargs)
+            return original(name, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "open", deny)
+        monkeypatch.setattr("app.document_storage.os.open", deny)
     # A missing second PDF must not be deleted on this partial failure either.
     (rag.documents / "accueil/visiteurs.pdf").unlink()
     response = rag.client.post("/api/ingest")
