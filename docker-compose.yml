@@ -15,9 +15,17 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: .env
+    environment:
+      INDEX_LOCK_PATH: /state/locks
     ports: ["127.0.0.1:8000:8000"]
     volumes:
-      - ./documents:/documents:ro
+      - type: bind
+        source: ./documents
+        target: /documents
+        read_only: true
+        bind:
+          create_host_path: false
+      - index_locks:/state/locks
     depends_on: [qdrant, ollama]
 
   frontend:
@@ -29,3 +37,4 @@ services:
 volumes:
   qdrant_data:
   ollama_data:
+  index_locks:

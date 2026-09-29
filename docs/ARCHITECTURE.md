@@ -4,36 +4,144 @@
 
 | Composant | Rôle |
 |---|---|
-| React + TypeScript | Interface de question et affichage des sources |
-| FastAPI | API d'ingestion et de question |
-| PyMuPDF | Extraction du texte et des numéros de page |
+| React + TypeScript | Question et affichage du chemin relatif, de la page et de l'extrait |
+| FastAPI / `services.py` | Synchronisation, embeddings par lots et réponses sourcées |
+| `indexing.py` | Inventaire strict, empreintes, verrous, versions et manifeste durable |
+| PyMuPDF | Extraction du texte d'une copie temporaire du PDF, page par page |
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
-| Qdrant | Stockage et recherche vectorielle |
+| Qdrant | Passages vectoriels et manifeste sans vecteurs |
 | Ollama / Qwen | Génération de réponses à partir du contexte retrouvé |
 
-## Ingestion
+## Identité et compatibilité
 
-1. Le backend recherche les PDF sous `documents/`.
-2. PyMuPDF extrait le texte page par page.
-3. Le texte est normalisé et découpé avec chevauchement.
-4. Ollama transforme chaque passage en vecteur.
-5. Qdrant enregistre le vecteur et les métadonnées `document`, `page` et `text`.
-6. Un UUID déterministe rend la réindexation d'un passage identique idempotente.
+`document` est le chemin POSIX relatif à `documents/`, par exemple
+`maintenance/fiche.pdf`. Il figure dans les métadonnées, le contexte du LLM et
+les sources. Deux sous-dossiers peuvent donc contenir le même nom de fichier.
 
-## Question-réponse
+L'empreinte combine le SHA-256 du fichier et une signature de pipeline : version
+de l'algorithme, version PyMuPDF, taille/chevauchement des passages, nom et digest
+Ollama du modèle d'embeddings, absence de troncature implicite. La taille du lot,
+le modèle de conversation et les paramètres de recherche n'y participent pas.
+Le digest est obtenu par `/api/tags`; aucun embedding n'est produit pour un
+passage inchangé. Le contenu du PDF est toutefois relu pour son SHA-256.
 
-1. La question est transformée en vecteur avec le même modèle d'embeddings.
-2. Qdrant retourne jusqu'à `TOP_K` passages dépassant `MIN_SCORE`.
-3. Sans résultat, l'API indique que l'information n'a pas été trouvée.
-4. Sinon, les passages et leurs références sont transmis à Qwen.
-5. Le prompt interdit d'ajouter une procédure ou une valeur absente du contexte.
-6. L'API retourne la réponse et les sources retrouvées.
+La révision dépend du chemin et de l'empreinte. L'UUID de chaque passage dépend
+de la révision et de son rang. Rejouer une écriture écrase donc le même point.
+Les modifications de découpage réindexent les fichiers. Un changement du modèle
+ou de son digest exige une nouvelle collection pour éviter des vecteurs
+incompatibles, même lorsque leur dimension est identique.
+
+## Stockage Qdrant
+
+- `<QDRANT_COLLECTION>` : points `schema`, `document`, `revision`, `fingerprint`,
+  `page`, `text`, avec vecteur. Index de payload sur `schema` et `revision`.
+- `<QDRANT_COLLECTION>__manifest` : collection sans vecteurs, un point de contrôle
+  (schéma, modèle/digest, dimension) et un point par document (révision active,
+  empreinte, nombre de passages). L'identifiant du manifeste dépend du chemin.
+
+Le manifeste est lu avec une pagination de 128 points, sans vecteurs. Il ne
+contient pas le texte des PDF. Il reste la seule source de vérité après un
+redémarrage; aucun état d'indexation n'est conservé uniquement en mémoire Python.
+Il faut sauvegarder/restaurer les deux collections ensemble, backend arrêté.
+La perte du manifeste avec des passages présents bloque l'index plutôt que de
+considérer arbitrairement les anciennes données comme actuelles.
+
+## Synchronisation et publication
+
+1. Prendre un verrou exclusif non bloquant, partagé entre les workers locaux.
+2. Parcourir entièrement les dossiers; toute erreur de parcours ou lien symbolique
+   de dossier/PDF fait échouer la synchronisation avant les mutations.
+3. Refuser un dossier vide si le manifeste contient des documents, sauf option
+   explicite `allow_empty=true`. Cette option ne permet pas un dossier absent.
+4. Lire le manifeste et contrôler le schéma. Pour une collection neuve, un unique
+   embedding d'initialisation fixe la dimension, puis le point de contrôle est écrit.
+5. Traiter les PDF un par un. Si l'empreinte correspond au manifeste, compter
+   `unchanged` et sauter extraction, embeddings et upserts du document.
+6. Pour un ajout/modification, copier le PDF sur disque temporaire et vérifier son
+   SHA-256. Extraire page par page, appeler `/api/embed` avec `input: [textes]` et
+   `truncate: false`, puis écrire chaque lot dans Qdrant avec `wait=True`.
+   La taille configurable vaut 16 par défaut. Vérifier nombre, dimension, valeurs
+   finies et vecteurs non nuls. Un PDF sans texte échoue avec `NO_TEXT`.
+7. Recontrôler le contenu source et le digest du modèle. Après l'écriture complète
+   de tous les passages, remplacer **un seul point manifeste** avec `wait=True`.
+   Cette écriture publie atomiquement la nouvelle révision du document. Toute
+   écriture doit retourner un statut `completed` avant de poursuivre.
+8. Vérifier de nouveau l'inventaire. Si l'arborescence a changé, annuler les
+   suppressions et demander une relance. Une erreur de document annule aussi
+   les suppressions de fichiers manquants pour cet appel.
+9. Pour chaque PDF absent d'un inventaire stable, supprimer son manifeste; il
+   devient immédiatement invisible aux prochaines recherches.
+10. Sans erreur de document, supprimer les points v2 dont la révision ne figure
+    dans aucun manifeste actif. Cette étape retire les anciennes versions et les
+    passages abandonnés lors d'une interruption. Elle n'efface pas les points
+    d'un autre schéma. En cas d'échec, retourner `cleanup_pending: true`.
+
+La publication est atomique **par document**, pas pour tout le corpus. Un échec
+sur un fichier n'annule pas les documents déjà publiés pendant cet appel.
+L'extraction, les vecteurs et le texte complet du corpus ne sont jamais accumulés
+ensemble : un fichier temporaire, une page extraite et un lot de vecteurs sont
+traités à la fois. L'inventaire et les petits manifestes restent en mémoire, donc
+leur coût et la taille du filtre croissent avec le nombre de documents.
+
+## Échecs et reprise
+
+| Moment de l'échec | État et relance |
+|---|---|
+| Lecture, extraction ou embedding | Ancien manifeste inchangé; les éventuels passages préparés sont invisibles |
+| Écriture d'un lot | Aucun nouveau manifeste publié; ancienne version préservée |
+| Avant publication du manifeste | Relance de la préparation avec les mêmes UUID, sans doublons |
+| Réponse perdue lors de la publication | Les deux versions restent stockées; Qdrant peut avoir validé la nouvelle. La relance relit le manifeste durable |
+| Après publication, avant nettoyage | Nouvelle version seule utilisée par l'API; une relance termine le nettoyage sans nouvel embedding |
+| Retrait du manifeste, avant nettoyage | Document déjà invisible; une relance supprime ses passages physiques |
+| Dossier absent, illisible ou vide non autorisé | Arrêt explicite, aucune suppression |
+
+Les échecs d'écriture ambigus n'entraînent **aucun nettoyage** pendant l'appel.
+La nouvelle version peut déjà être active si son manifeste a été écrit avant la
+perte de la réponse, mais elle contient alors tous ses passages. L'ancienne
+version n'est supprimée qu'à une relance réussie. Ne modifiez pas le modèle Ollama
+ou les PDF pendant une synchronisation; les vérifications détectent les changements
+observables, sans fournir de verrou distribué sur ces ressources externes.
+
+## Question-réponse et concurrence
+
+1. Prendre le verrou partagé, lire les manifestes et vérifier l'identité du modèle.
+2. Transformer la question en vecteur; rechercher uniquement les révisions actives
+   avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
+3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
+   appeler le modèle de conversation et répondre « information non trouvée ».
+4. Transmettre contexte et références à Qwen; conserver les garde-fous du prompt.
+5. Retourner la réponse et les sources avec leur chemin relatif.
+
+Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
+HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
+Une réponse dont les passages ont déjà été récupérés reste une photographie de
+ce moment, même si une synchronisation démarre pendant sa génération.
+
+`portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
+partage `/state/locks` entre conteneurs du même projet, et refuse de créer
+silencieusement un dossier hôte `documents/` manquant. Hors Compose, tous les
+workers doivent utiliser le même `INDEX_LOCK_PATH` et la même URL Qdrant.
+Plusieurs hôtes avec des dossiers de verrous indépendants ne sont pas supportés.
+Une requête Qdrant directe sans le filtre applicatif n'offre pas ces garanties.
+
+## Migration et suppression complète
+
+Un index historique non vide sans manifeste v2 retourne `LEGACY_INDEX` sans
+modification. Aucun rattachement par nom de fichier n'est tenté. Choisir une
+nouvelle `QDRANT_COLLECTION`, reconstruire depuis les PDF, valider les sources et
+les compteurs, puis conserver l'ancienne collection jusqu'à décision explicite de
+la retirer. Le README donne les commandes et la procédure de retour arrière.
+
+La suppression volontaire totale demande un dossier présent, lisible et sans PDF,
+puis `POST /api/ingest?allow_empty=true`. Elle retire les manifestes de documents
+et leurs passages, tout en conservant le point de contrôle. Elle ne migre pas un
+ancien index et ne change pas le modèle associé à la collection.
 
 ## Frontières de confiance
 
 - Les PDF sont des entrées non fiables et peuvent contenir des instructions trompeuses.
 - Une similarité vectorielle ne prouve ni l'exactitude ni l'actualité d'un document.
 - Le LLM peut encore interpréter incorrectement un passage.
-- L'accès réseau est limité à `127.0.0.1` par défaut, mais l'application n'offre aucune authentification.
-- Les volumes Docker conservent localement modèles et vecteurs après l'arrêt des conteneurs.
-
+- Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
+- Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
+- Les volumes Docker conservent localement modèles, manifeste et vecteurs.
