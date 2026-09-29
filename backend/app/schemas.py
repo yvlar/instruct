@@ -18,7 +18,19 @@ class Answer(BaseModel):
     grounded: bool
 
 
+class IngestionError(BaseModel):
+    document: str
+    code: str
+
+
 class IngestionResult(BaseModel):
     documents: int
     chunks: int
 
+    added: int = 0
+    modified: int = 0
+    unchanged: int = 0
+    deleted: int = 0
+    failed: int = 0
+    errors: list[IngestionError] = Field(default_factory=list)
+    cleanup_pending: bool = False

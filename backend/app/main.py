@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .indexing import IndexErrorBase
 from .schemas import Answer, IngestionResult, Question
 from .services import knowledge_base
 
@@ -10,11 +11,16 @@ from .services import knowledge_base
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
-    await knowledge_base.http.aclose()
+    await knowledge_base.close()
 
 
 app = FastAPI(title="Instruct IA", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/healthz")
@@ -23,18 +29,24 @@ async def health() -> dict:
 
 
 @app.post("/api/ingest", response_model=IngestionResult)
-async def ingest() -> IngestionResult:
+async def ingest(allow_empty: bool = False) -> IngestionResult:
     try:
-        documents, chunks = await knowledge_base.ingest()
-        return IngestionResult(documents=documents, chunks=chunks)
+        return IngestionResult(**await knowledge_base.ingest(allow_empty=allow_empty))
+    except IndexErrorBase as exc:
+        raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(503, f"Ingestion impossible: {exc}") from exc
+        raise HTTPException(
+            503, "Ingestion impossible; vérifiez les services locaux."
+        ) from exc
 
 
 @app.post("/api/ask", response_model=Answer)
 async def ask(payload: Question) -> Answer:
     try:
         return Answer(**await knowledge_base.ask(payload.question))
+    except IndexErrorBase as exc:
+        raise HTTPException(503, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(503, f"Assistant indisponible: {exc}") from exc
-
+        raise HTTPException(
+            503, "Assistant indisponible; vérifiez les services locaux."
+        ) from exc
