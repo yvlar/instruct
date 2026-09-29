@@ -6,6 +6,7 @@ class Question(BaseModel):
 
 
 class Source(BaseModel):
+    passage_id: str
     document: str
     page: int
     excerpt: str

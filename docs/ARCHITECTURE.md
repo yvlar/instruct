@@ -10,7 +10,7 @@
 | PyMuPDF | Extraction du texte d'une copie temporaire du PDF, page par page |
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
 | Qdrant | Passages vectoriels et manifeste sans vecteurs |
-| Ollama / Qwen | Génération de réponses à partir du contexte retrouvé |
+| Ollama / Qwen + `answering.py` | Sélection structurée de passages; références validées et rendu extractif côté serveur |
 
 ## Identité et compatibilité
 
@@ -109,13 +109,20 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
    avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
 3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
    appeler le modèle de conversation et répondre « information non trouvée ».
-4. Transmettre contexte et références à Qwen; conserver les garde-fous du prompt.
-5. Retourner la réponse et les sources avec leur chemin relatif.
+4. Transmettre question et passages avec leurs UUID à Qwen comme données JSON
+   non fiables. Demander une liste `passage_ids` structurée, sans texte libre.
+5. Refuser toute sortie malformée, référence non récupérée ou champ supplémentaire.
+   Reprendre le verrou partagé et vérifier que les révisions citées sont encore actives.
+6. Construire la réponse côté serveur à partir des passages complets, séparés et
+   cités. Retourner uniquement les sources sélectionnées, avec leur `passage_id`.
+   Signaler l'absence de priorité de version si plusieurs documents ont été retrouvés.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
-Une réponse dont les passages ont déjà été récupérés reste une photographie de
-ce moment, même si une synchronisation démarre pendant sa génération.
+Une révision retirée pendant la génération déclenche un refus au contrôle final.
+Une ingestion encore en cours à ce moment déclenche HTTP 503 / `INDEX_BUSY`.
+Une réponse reste une photographie du manifeste au dernier contrôle; elle ne peut
+pas se mettre à jour rétroactivement après son envoi.
 
 `portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
 partage `/state/locks` entre conteneurs du même projet, et refuse de créer
@@ -142,6 +149,10 @@ ancien index et ne change pas le modèle associé à la collection.
 - Les PDF sont des entrées non fiables et peuvent contenir des instructions trompeuses.
 - Une similarité vectorielle ne prouve ni l'exactitude ni l'actualité d'un document.
 - Le LLM peut encore interpréter incorrectement un passage.
+- `grounded` atteste la provenance des extraits, pas leur pertinence sémantique.
+- Les réponses sont extractives; le modèle ne rédige plus les consignes affichées.
 - Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
 - Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
 - Les volumes Docker conservent localement modèles, manifeste et vecteurs.
+
+Voir [la suite de régression et ses limites](RAG_REGRESSION.md).

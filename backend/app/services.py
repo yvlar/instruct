@@ -1,3 +1,4 @@
+import json
 import math
 import uuid
 
@@ -5,6 +6,13 @@ import fitz
 import httpx
 from qdrant_client import QdrantClient, models
 
+from .answering import (
+    SYSTEM_PROMPT,
+    PassageSelection,
+    refusal,
+    render_answer,
+    selected_hits,
+)
 from .config import settings
 from .indexing import (
     PIPELINE_VERSION,
@@ -18,15 +26,6 @@ from .indexing import (
     index_lock,
     require_completed,
 )
-
-SYSTEM_PROMPT = """Tu es un assistant d'instructions de travail industrielles.
-Réponds uniquement avec le CONTEXTE fourni. N'invente jamais une étape, une valeur,
-une consigne de sécurité ou un équipement. Si le contexte est insuffisant, réponds
-exactement : « Information non trouvée dans les instructions disponibles. »
-Cite les sources dans le texte sous la forme [document, p. X]. Réponds en français,
-clairement et sans ajouter de connaissance générale. Rappelle de vérifier la version
-officielle du document avant d'exécuter une procédure.
-"""
 
 
 class KnowledgeBase:
@@ -289,44 +288,50 @@ class KnowledgeBase:
                     with_payload=True,
                 ).points
         if not hits:
-            return {
-                "answer": "Information non trouvée dans les instructions disponibles.",
-                "sources": [],
-                "grounded": False,
-            }
-        context = "\n\n".join(
-            f"SOURCE {i}: [{h.payload['document']}, p. {h.payload['page']}]\n{h.payload['text']}"
-            for i, h in enumerate(hits, start=1)
-        )
+            return refusal()
+        context = {
+            "question": question,
+            "passages": [
+                {
+                    "id": str(hit.id),
+                    "document": hit.payload["document"],
+                    "page": hit.payload["page"],
+                    "text": hit.payload["text"],
+                }
+                for hit in hits
+            ],
+        }
         response = await self.http.post(
             f"{self.settings.ollama_url}/api/chat",
             json={
                 "model": self.settings.ollama_model,
                 "stream": False,
+                "format": PassageSelection.model_json_schema(),
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
                         "role": "user",
-                        "content": f"CONTEXTE:\n{context}\n\nQUESTION:\n{question}",
+                        "content": json.dumps(context, ensure_ascii=False),
                     },
                 ],
                 "options": {"temperature": 0.1},
             },
         )
         response.raise_for_status()
-        return {
-            "answer": response.json()["message"]["content"],
-            "grounded": True,
-            "sources": [
-                {
-                    "document": h.payload["document"],
-                    "page": h.payload["page"],
-                    "excerpt": h.payload["text"][:300],
-                    "score": round(h.score, 3),
-                }
-                for h in hits
-            ],
-        }
+        selected = selected_hits(response.json()["message"]["content"], hits)
+        if not selected:
+            return refusal()
+        # An ingestion can finish while Ollama generates. Do not return references
+        # that ceased being active since retrieval, even when old points still exist.
+        with index_lock(self.settings, shared=True):
+            _, current = self.store.read()
+            if any(
+                current.get(hit.payload["document"], {}).get("revision")
+                != hit.payload["revision"]
+                for hit in selected
+            ):
+                return refusal()
+            return render_answer(selected, hits)
 
 
 knowledge_base = KnowledgeBase()
