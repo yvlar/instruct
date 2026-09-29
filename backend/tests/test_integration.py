@@ -33,6 +33,7 @@ def test_real_pdf_and_persistent_qdrant_survive_restart(tmp_path):
             _env_file=None,
             documents_path=str(root),
             index_lock_path=str(tmp_path / "locks"),
+            lexical_index_path=str(tmp_path / "lexical"),
             embedding_batch_size=2,
         )
         storage = str(tmp_path / "qdrant")
@@ -100,6 +101,7 @@ def test_existing_qdrant_and_ollama_http_services(tmp_path):
             ),
             qdrant_collection=f"instruct_test_{uuid.uuid4().hex}",
             index_lock_path=str(tmp_path / "locks"),
+            lexical_index_path=str(tmp_path / "lexical"),
         )
         kb = KnowledgeBase(config=config)
         try:

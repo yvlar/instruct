@@ -147,6 +147,7 @@ def env(tmp_path):
         _env_file=None,
         documents_path=str(tmp_path / "documents"),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
         embedding_batch_size=2,
     )
     files = FakeFiles()

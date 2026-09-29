@@ -106,6 +106,7 @@ def rag(tmp_path, monkeypatch):
         _env_file=None,
         documents_path=str(documents),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
         chunk_size=220,
         chunk_overlap=35,
         embedding_batch_size=2,

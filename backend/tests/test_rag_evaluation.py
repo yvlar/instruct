@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -16,8 +17,10 @@ def test_report_detects_failures_and_only_cleans_its_collections(
     monkeypatch, malformed
 ):
     stores = []
+    lexical_paths = []
 
     def create_kb(*, config):
+        lexical_paths.append(Path(config.lexical_index_path))
         model = ControlledOllama()
 
         def select(context):
@@ -71,6 +74,27 @@ def test_report_detects_failures_and_only_cleans_its_collections(
         } <= entry.keys()
     assert report["cleanup_errors"] == []
     assert len(stores) == 3
+    assert all(not path.exists() for path in lexical_paths)
     for name, deleted in stores:
         assert name.startswith("instruct_eval_")
         assert deleted == [name + "__manifest", name]
+
+
+@pytest.mark.parametrize(
+    "excerpt, expected",
+    [
+        ("PRESSE ORION\n\n2. Régler à 12,5 bar.", True),
+        ("PRESSE ORION\n\n2. Régler à 12,6 bar.", False),
+        ("PRESSE ORION\n\n2. Régler à 12,5 kPa.", False),
+        ("PRESSE NEPTUNE\n\n2. Régler à 12,5 bar.", False),
+        ("2. Régler à 12,5 bar.\n\nPRESSE ORION", False),
+        ("", False),
+    ],
+)
+def test_structured_citation_checks_every_block_without_changing_values(
+    excerpt, expected
+):
+    from evaluation.checks import excerpt_in_page
+
+    page = "PRESSE ORION\n1. Installer le joint.\n2. Régler à 12,5 bar."
+    assert excerpt_in_page(excerpt, page) is expected

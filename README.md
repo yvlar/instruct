@@ -141,14 +141,14 @@ pour vider un index dont le dossier source est vide.
 ### Migrer un index existant ou changer de modèle d'embeddings
 
 Les anciens points ne contiennent que le nom du fichier; il est impossible de
-retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste v2
+retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste compatible
 produit `LEGACY_INDEX`; il n'est ni supprimé ni interrogé par la nouvelle version.
 La reconstruction dans une **nouvelle collection** est obligatoire :
 
 1. Conservez une sauvegarde des PDF et de Qdrant; arrêtez le backend avec
    `docker compose stop backend`.
 2. Dans `.env`, remplacez `QDRANT_COLLECTION=work_instructions` par un nom encore
-   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_v2`.
+   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_hybrid_v3`.
 3. Exécutez `docker compose up -d --build backend` puis l'appel `/api/ingest`.
 4. Vérifiez `failed: 0`, `cleanup_pending: false`, puis une question avec ses sources.
    Relancez l'ingestion et vérifiez `unchanged` et `chunks: 0`.
@@ -180,6 +180,22 @@ curl -X POST http://localhost:8000/api/ask \
 | `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
 | `POST` | `/api/ask` | Retourne une réponse fondée sur les passages retrouvés |
 
+## Recherche hybride et migration
+
+La recherche combine les embeddings Qdrant et SQLite FTS5 pour retrouver aussi
+les codes exacts, nombres et unités. Les passages conservent les titres, étapes
+et pages; le contexte est borné. Les références et extraits cités sont validés
+avant de retourner les sources utilisées. `grounded` indique une provenance
+validée, pas une garantie d'exactitude. Le score de recherche n'est pas une
+probabilité.
+
+**Le schéma 3 exige de reconstruire les index v2 dans une nouvelle collection.**
+Les anciens index sont conservés et refusés explicitement jusqu'à cette migration.
+Les modalités de synchronisation et de suppression volontaire restent identiques.
+
+Voir [recherche hybride](docs/HYBRID_RETRIEVAL.md) pour les réglages, la migration,
+les limites, le benchmark reproductible et les mesures réellement obtenues.
+
 ## Configuration
 
 Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
@@ -193,8 +209,11 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `CHUNK_SIZE` | `1400` | Taille cible en caractères, de 100 à 16000 |
 | `CHUNK_OVERLAP` | `250` | Chevauchement, inférieur à `CHUNK_SIZE` |
 | `INDEX_LOCK_PATH` | `/tmp/instruct-locks` | Verrous locaux; Compose impose le volume partagé `/state/locks` |
-| `MIN_SCORE` | `0.35` | Seuil minimal de pertinence |
-| `TOP_K` | `6` | Nombre maximal de passages récupérés |
+| `MIN_SCORE` | `0.35` | Seuil sémantique seulement |
+| `TOP_K` | `4` | Nombre maximal de passages envoyés au modèle |
+| `RETRIEVAL_CANDIDATES` | `24` | Candidats par recherche sémantique/lexicale |
+| `CONTEXT_MAX_CHARS` | `8000` | Budget du contexte sérialisé en caractères |
+| `LEXICAL_INDEX_PATH` | `./data/lexical` | SQLite persistant; Compose impose `/state/lexical` |
 
 ## Confidentialité et sécurité
 

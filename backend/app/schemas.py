@@ -11,6 +11,8 @@ class Source(BaseModel):
     page: int
     excerpt: str
     score: float
+    revision: str
+    fingerprint: str
 
 
 class Answer(BaseModel):

@@ -34,4 +34,9 @@ documents/**
 # Données locales
 qdrant_storage/
 ollama_data/
+
+# Local lexical index and benchmark outputs
+data/
+benchmark-results/
+*.sqlite3
 evaluation-results/

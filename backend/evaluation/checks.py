@@ -22,6 +22,23 @@ def normalize(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def excerpt_in_page(excerpt: str, text: str) -> bool:
+    """Verify ordered original blocks, allowing repeated page-local heading context.
+
+    A structured passage may repeat a heading before a later step. Every block
+    must still occur verbatim on the cited page in order, modulo whitespace only.
+    Values, units and punctuation are never normalized away.
+    """
+    blocks = [normalize(part) for part in re.split(r"\n\s*\n", excerpt) if part.strip()]
+    text, cursor = normalize(text), 0
+    for block in blocks:
+        position = text.find(block, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(block)
+    return bool(blocks)
+
+
 def check_answer(case: dict, answer: dict, documents: Path) -> list[str]:
     """Return explicit failures; an empty list means only these checks passed."""
     failures = []
@@ -54,7 +71,7 @@ def check_answer(case: dict, answer: dict, documents: Path) -> list[str]:
                     continue
                 text = normalize(pdf[page - 1].get_text())
             excerpt = source["excerpt"]
-            if not excerpt or excerpt not in text:
+            if not excerpt_in_page(excerpt, text):
                 failures.append("Extrait absent de la page citée")
             marker = f"[{number}] {source['document']}, p. {page}"
             if marker not in answer["answer"] or excerpt not in answer["answer"]:

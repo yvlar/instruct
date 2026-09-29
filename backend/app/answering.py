@@ -55,7 +55,9 @@ def render_answer(selected, retrieved) -> dict:
             "document": hit.payload["document"],
             "page": hit.payload["page"],
             "excerpt": hit.payload["text"],
-            "score": round(hit.score, 3),
+            "score": round(hit.score, 6),
+            "revision": hit.payload["revision"],
+            "fingerprint": hit.payload["fingerprint"],
         }
         for hit in selected
     ]

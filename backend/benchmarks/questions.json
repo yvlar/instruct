@@ -1,0 +1,9 @@
+[
+  {"id":"paraphrase","question":"Comment couper toute alimentation électrique avant entretien?","document":"orion.pdf","page":1,"contains":"Actionner le sectionneur"},
+  {"id":"part","question":"Où installer le joint AB-204/X?","document":"orion.pdf","page":2,"contains":"AB-204/X"},
+  {"id":"pressure","question":"Quelle machine exige une pression de 12,5 bar?","document":"orion.pdf","page":2,"contains":"12,5 bar"},
+  {"id":"unit","question":"Sur quelle machine régler 12.5 kPa?","document":"neptune.pdf","page":1,"contains":"12,5 kPa"},
+  {"id":"emergency","question":"Comment activer l'arrêt d’urgence?","document":"orion.pdf","page":1,"contains":"bouton rouge"},
+  {"id":"machine","question":"Quelle procédure concerne la machine Neptune?","document":"neptune.pdf","page":1,"contains":"NEPTUNE"},
+  {"id":"absent","question":"Quelle est la température du four Vulcain?","document":null,"page":null,"contains":null}
+]

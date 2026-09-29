@@ -38,6 +38,7 @@ async def evaluate(args):
                 _env_file=None,
                 documents_path=str(documents),
                 index_lock_path=str(Path(temp) / "locks"),
+                lexical_index_path=str(Path(temp) / "lexical"),
                 qdrant_url=args.qdrant_url,
                 ollama_url=args.ollama_url,
                 ollama_model=args.chat_model,

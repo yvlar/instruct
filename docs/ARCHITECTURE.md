@@ -10,7 +10,8 @@
 | PyMuPDF | Extraction du texte d'une copie temporaire du PDF, page par page |
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
 | Qdrant | Passages vectoriels et manifeste sans vecteurs |
-| Ollama / Qwen + `answering.py` | Sélection structurée de passages; références validées et rendu extractif côté serveur |
+| SQLite FTS5 | Recherche lexicale locale des mêmes révisions |
+| Ollama / Qwen + `answering.py` | Sélection structurée de passages et rendu extractif côté serveur |
 
 ## Identité et compatibilité
 
@@ -71,7 +72,7 @@ considérer arbitrairement les anciennes données comme actuelles.
    les suppressions de fichiers manquants pour cet appel.
 9. Pour chaque PDF absent d'un inventaire stable, supprimer son manifeste; il
    devient immédiatement invisible aux prochaines recherches.
-10. Sans erreur de document, supprimer les points v2 dont la révision ne figure
+10. Sans erreur de document, supprimer les points v3 dont la révision ne figure
     dans aucun manifeste actif. Cette étape retire les anciennes versions et les
     passages abandonnés lors d'une interruption. Elle n'efface pas les points
     d'un autre schéma. En cas d'échec, retourner `cleanup_pending: true`.
@@ -104,25 +105,26 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 
 ## Question-réponse et concurrence
 
-1. Prendre le verrou partagé, lire les manifestes et vérifier l'identité du modèle.
-2. Transformer la question en vecteur; rechercher uniquement les révisions actives
-   avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
-3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
-   appeler le modèle de conversation et répondre « information non trouvée ».
-4. Transmettre question et passages avec leurs UUID à Qwen comme données JSON
-   non fiables. Demander une liste `passage_ids` structurée, sans texte libre.
-5. Refuser toute sortie malformée, référence non récupérée ou champ supplémentaire.
-   Reprendre le verrou partagé et vérifier que les révisions citées sont encore actives.
-6. Construire la réponse côté serveur à partir des passages complets, séparés et
-   cités. Retourner uniquement les sources sélectionnées, avec leur `passage_id`.
-   Signaler l'absence de priorité de version si plusieurs documents ont été retrouvés.
+La recherche interroge les révisions actives dans Qdrant et SQLite, puis fusionne
+les candidats par priorité exacte et RRF. Les UUID, versions et pages restent
+attachés aux passages. Le contexte garde au maximum quatre passages entiers sous
+un budget configurable. Qwen retourne uniquement des `passage_ids`; le serveur
+valide tous les identifiants contre les seuls passages envoyés, puis restitue
+leurs extraits complets avec citations. Aucun texte libre du modèle n'est accepté.
+Les documents différents restent séparés avec l'avertissement de version existant.
+Après génération, les révisions sont revérifiées sous verrou : une révision
+retirée ou remplacée provoque un refus. Le rang n'est jamais une preuve de vérité.
+
+Le [guide hybride](HYBRID_RETRIEVAL.md) décrit l'algorithme, le schéma 3, les limites
+et les mesures. Lors de l'ingestion décrite ci-dessus, chaque lot Qdrant est aussi
+écrit dans SQLite **avant** publication du manifeste. Le nettoyage concerne les
+deux index. La perte de SQLite se répare depuis Qdrant sans nouvel embedding.
+Un ancien manifeste v2 impose une nouvelle collection; aucune migration silencieuse.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
-Une révision retirée pendant la génération déclenche un refus au contrôle final.
-Une ingestion encore en cours à ce moment déclenche HTTP 503 / `INDEX_BUSY`.
-Une réponse reste une photographie du manifeste au dernier contrôle; elle ne peut
-pas se mettre à jour rétroactivement après son envoi.
+Si une synchronisation modifie ou retire une révision sélectionnée pendant la
+génération, la réponse est refusée; une ingestion encore active produit `INDEX_BUSY`.
 
 `portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
 partage `/state/locks` entre conteneurs du même projet, et refuse de créer
@@ -133,7 +135,7 @@ Une requête Qdrant directe sans le filtre applicatif n'offre pas ces garanties.
 
 ## Migration et suppression complète
 
-Un index historique non vide sans manifeste v2 retourne `LEGACY_INDEX` sans
+Un index historique non vide sans manifeste compatible retourne `LEGACY_INDEX` sans
 modification. Aucun rattachement par nom de fichier n'est tenté. Choisir une
 nouvelle `QDRANT_COLLECTION`, reconstruire depuis les PDF, valider les sources et
 les compteurs, puis conserver l'ancienne collection jusqu'à décision explicite de
@@ -149,10 +151,6 @@ ancien index et ne change pas le modèle associé à la collection.
 - Les PDF sont des entrées non fiables et peuvent contenir des instructions trompeuses.
 - Une similarité vectorielle ne prouve ni l'exactitude ni l'actualité d'un document.
 - Le LLM peut encore interpréter incorrectement un passage.
-- `grounded` atteste la provenance des extraits, pas leur pertinence sémantique.
-- Les réponses sont extractives; le modèle ne rédige plus les consignes affichées.
 - Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
 - Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
 - Les volumes Docker conservent localement modèles, manifeste et vecteurs.
-
-Voir [la suite de régression et ses limites](RAG_REGRESSION.md).
