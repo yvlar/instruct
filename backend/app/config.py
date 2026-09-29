@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1400, ge=100, le=16000)
     chunk_overlap: int = Field(default=250, ge=0)
     index_lock_path: str = "/tmp/instruct-locks"
+    document_state_path: str = ".instruct-state"
+    max_pdf_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=1024**3)
 
     @model_validator(mode="after")
     def valid_chunk_overlap(self):

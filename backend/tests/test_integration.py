@@ -32,6 +32,7 @@ def test_real_pdf_and_persistent_qdrant_survive_restart(tmp_path):
         config = Settings(
             _env_file=None,
             documents_path=str(root),
+            document_state_path=str(tmp_path / "state"),
             index_lock_path=str(tmp_path / "locks"),
             embedding_batch_size=2,
         )
@@ -93,6 +94,7 @@ def test_existing_qdrant_and_ollama_http_services(tmp_path):
         config = Settings(
             _env_file=None,
             documents_path=str(root),
+            document_state_path=str(tmp_path / "state"),
             qdrant_url=os.environ["INSTRUCT_TEST_QDRANT_URL"],
             ollama_url=os.environ["INSTRUCT_TEST_OLLAMA_URL"],
             embedding_model=os.getenv(

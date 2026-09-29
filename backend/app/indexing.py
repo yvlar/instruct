@@ -237,7 +237,9 @@ class RevisionStore:
         )
         return control
 
-    def publish(self, document: str, fingerprint: str, revision: str, chunks: int):
+    def publish(
+        self, document: str, fingerprint: str, revision: str, chunks: int, **metadata
+    ):
         require_completed(
             self.qdrant.upsert(
                 self.manifest_collection,
@@ -252,6 +254,7 @@ class RevisionStore:
                             "fingerprint": fingerprint,
                             "revision": revision,
                             "chunks": chunks,
+                            **metadata,
                         },
                     )
                 ],

@@ -17,15 +17,22 @@ services:
     env_file: .env
     environment:
       INDEX_LOCK_PATH: /state/locks
+      DOCUMENT_STATE_PATH: /state/documents
+      DOCUMENTS_PATH: /documents
     ports: ["127.0.0.1:8000:8000"]
     volumes:
       - type: bind
         source: ./documents
         target: /documents
-        read_only: true
+        read_only: false
         bind:
           create_host_path: false
       - index_locks:/state/locks
+      - document_state:/state/documents
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt: [no-new-privileges:true]
     depends_on: [qdrant, ollama]
 
   frontend:
@@ -38,3 +45,4 @@ volumes:
   qdrant_data:
   ollama_data:
   index_locks:
+  document_state:

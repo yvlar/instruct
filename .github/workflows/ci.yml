@@ -44,6 +44,27 @@ jobs:
       - name: Compiler le frontend
         working-directory: frontend
         run: npm run build
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Installer les doubles de services et le navigateur
+        run: |
+          pip install -r backend/requirements-dev.txt
+          cd frontend
+          npx playwright install --with-deps chromium
+      - name: Vérifier le parcours documentaire sur ordinateur et mobile
+        working-directory: frontend
+        run: npm run test:e2e
+      - name: Conserver les captures et traces navigateur
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documents-browser
+          path: |
+            docs/screenshots/*.png
+            frontend/test-results/
 
   docker:
     runs-on: ubuntu-latest
@@ -52,6 +73,8 @@ jobs:
       - name: Créer la configuration
         run: cp .env.example .env
       - name: Valider Docker Compose
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
       - name: Construire les images applicatives
         run: docker compose build backend frontend
