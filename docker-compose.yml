@@ -17,6 +17,7 @@ services:
     env_file: .env
     environment:
       INDEX_LOCK_PATH: /state/locks
+      LEXICAL_INDEX_PATH: /state/lexical
     ports: ["127.0.0.1:8000:8000"]
     volumes:
       - type: bind
@@ -26,6 +27,7 @@ services:
         bind:
           create_host_path: false
       - index_locks:/state/locks
+      - lexical_data:/state/lexical
     depends_on: [qdrant, ollama]
 
   frontend:
@@ -38,3 +40,4 @@ volumes:
   qdrant_data:
   ollama_data:
   index_locks:
+  lexical_data:

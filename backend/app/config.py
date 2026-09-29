@@ -20,8 +20,11 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP doit être inférieur à CHUNK_SIZE")
         return self
 
-    min_score: float = 0.35
-    top_k: int = 6
+    lexical_index_path: str = "./data/lexical"
+    retrieval_candidates: int = Field(default=24, ge=1, le=100)
+    context_max_chars: int = Field(default=8000, ge=512, le=64000)
+    min_score: float = Field(default=0.35, ge=-1, le=1)
+    top_k: int = Field(default=4, ge=1, le=20)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -10,6 +10,9 @@ class Source(BaseModel):
     page: int
     excerpt: str
     score: float
+    passage_id: str
+    revision: str
+    fingerprint: str
 
 
 class Answer(BaseModel):

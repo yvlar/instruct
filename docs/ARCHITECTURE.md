@@ -10,6 +10,7 @@
 | PyMuPDF | Extraction du texte d'une copie temporaire du PDF, page par page |
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
 | Qdrant | Passages vectoriels et manifeste sans vecteurs |
+| SQLite FTS5 | Recherche lexicale locale des mêmes révisions |
 | Ollama / Qwen | Génération de réponses à partir du contexte retrouvé |
 
 ## Identité et compatibilité
@@ -71,7 +72,7 @@ considérer arbitrairement les anciennes données comme actuelles.
    les suppressions de fichiers manquants pour cet appel.
 9. Pour chaque PDF absent d'un inventaire stable, supprimer son manifeste; il
    devient immédiatement invisible aux prochaines recherches.
-10. Sans erreur de document, supprimer les points v2 dont la révision ne figure
+10. Sans erreur de document, supprimer les points v3 dont la révision ne figure
     dans aucun manifeste actif. Cette étape retire les anciennes versions et les
     passages abandonnés lors d'une interruption. Elle n'efface pas les points
     d'un autre schéma. En cas d'échec, retourner `cleanup_pending: true`.
@@ -104,13 +105,17 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 
 ## Question-réponse et concurrence
 
-1. Prendre le verrou partagé, lire les manifestes et vérifier l'identité du modèle.
-2. Transformer la question en vecteur; rechercher uniquement les révisions actives
-   avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
-3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
-   appeler le modèle de conversation et répondre « information non trouvée ».
-4. Transmettre contexte et références à Qwen; conserver les garde-fous du prompt.
-5. Retourner la réponse et les sources avec leur chemin relatif.
+La recherche interroge les révisions actives dans Qdrant et SQLite, puis fusionne
+les candidats par priorité exacte et RRF. Les UUID, versions et pages restent
+attachés aux passages. Le contexte garde au maximum quatre passages entiers sous
+un budget configurable. Une sortie structurée et des extraits vérifiables servent
+à valider la provenance des seules sources utilisées, jamais la vérité de la réponse.
+
+Le [guide hybride](HYBRID_RETRIEVAL.md) décrit l'algorithme, le schéma 3, les limites
+et les mesures. Lors de l'ingestion décrite ci-dessus, chaque lot Qdrant est aussi
+écrit dans SQLite **avant** publication du manifeste. Le nettoyage concerne les
+deux index. La perte de SQLite se répare depuis Qdrant sans nouvel embedding.
+Un ancien manifeste v2 impose une nouvelle collection; aucune migration silencieuse.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
@@ -126,7 +131,7 @@ Une requête Qdrant directe sans le filtre applicatif n'offre pas ces garanties.
 
 ## Migration et suppression complète
 
-Un index historique non vide sans manifeste v2 retourne `LEGACY_INDEX` sans
+Un index historique non vide sans manifeste compatible retourne `LEGACY_INDEX` sans
 modification. Aucun rattachement par nom de fichier n'est tenté. Choisir une
 nouvelle `QDRANT_COLLECTION`, reconstruire depuis les PDF, valider les sources et
 les compteurs, puis conserver l'ancienne collection jusqu'à décision explicite de

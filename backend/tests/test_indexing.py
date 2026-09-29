@@ -65,8 +65,20 @@ class FakeOllama:
         body = json.loads(request.content)
         if request.url.path == "/api/chat":
             self.chat_requests.append(body)
+            context = (
+                body["messages"][1]["content"]
+                .split("CONTEXTE:\n", 1)[1]
+                .split("\n\nQUESTION:", 1)[0]
+            )
+            passages = [json.loads(part) for part in context.split("\n\n")]
+            content = {
+                "answer": "Réponse sourcée.",
+                "citations": [
+                    {"passage_id": p["id"], "quote": p["text"]} for p in passages
+                ],
+            }
             return httpx.Response(
-                200, json={"message": {"content": "Réponse sourcée."}}
+                200, json={"message": {"content": json.dumps(content)}}
             )
         assert request.url.path == "/api/embed"
         assert isinstance(body["input"], list)
@@ -139,6 +151,7 @@ def env(tmp_path):
         _env_file=None,
         documents_path=str(tmp_path / "documents"),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
         embedding_batch_size=2,
     )
     files = FakeFiles()
