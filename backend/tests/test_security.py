@@ -364,6 +364,8 @@ def test_backup_restore_real_pdfs_sqlite_vectors_login_rights_and_citations(secu
     target = e.config.model_copy(
         update={
             "state_path": str(e.tmp / "restored-state"),
+            "document_state_path": str(e.tmp / "restored-state") + "-manager",
+            "lexical_index_path": str(e.tmp / "restored-state") + "-lexical",
             "documents_path": str(e.tmp / "restored-documents"),
             "index_lock_path": str(e.tmp / "restored-locks"),
             "qdrant_collection": "restored",
@@ -547,6 +549,8 @@ def test_failed_restore_is_fail_closed_and_explicit_retry_recovers(
     target = e.config.model_copy(
         update={
             "state_path": str(e.tmp / "failed-state"),
+            "document_state_path": str(e.tmp / "failed-state") + "-manager",
+            "lexical_index_path": str(e.tmp / "failed-state") + "-lexical",
             "documents_path": str(e.tmp / "failed-docs"),
             "index_lock_path": str(e.tmp / "failed-locks"),
         }
@@ -627,3 +631,53 @@ def test_failed_archive_write_never_logs_backup_success(secured, monkeypatch):
             r[0]
             for r in db.execute("SELECT result FROM audit WHERE action='backup.finish'")
         ] == ["failure"]
+
+
+def test_lexical_only_retrieval_excludes_other_group(secured, monkeypatch):
+    e = secured
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        e.kb.qdrant, "query_points", lambda *a, **kw: SimpleNamespace(points=[])
+    )
+    alice = e.login("alice")
+    answer = alice.post("/api/ask", json={"question": "ALPHA pressure 42 kPa"}).json()
+    assert answer["grounded"] and all(
+        s["document"] == "a/guide.pdf" for s in answer["sources"]
+    )
+    before = len(e.ollama.chat_requests)
+    forbidden = alice.post(
+        "/api/ask", json={"question": "BETA confidential valve"}
+    ).json()
+    assert not forbidden["grounded"] and forbidden["sources"] == []
+    assert len(e.ollama.chat_requests) == before
+    assert e.admin.get("/api/library/documents").status_code == 200
+    for name in ("alice", "manager"):
+        client = e.login(name)
+        for method, path in (
+            ("get", "/api/library/documents"),
+            ("post", "/api/library/documents/sync"),
+            ("post", f"/api/library/documents/{e.b}/index"),
+            ("get", f"/api/library/documents/{e.b}/file?version=unknown"),
+        ):
+            assert getattr(client, method)(path).status_code == 403
+
+
+def test_advanced_worker_rechecks_revoked_session_and_never_persists_token(secured):
+    e = secured
+    manager = e.app.state.library
+    from itsdangerous import TimestampSigner
+    import base64
+
+    raw = TimestampSigner(e.store.secret).unsign(
+        e.admin.cookies.get("instruct_session")
+    )
+    token = json.loads(base64.b64decode(raw))["token"]
+    manager.actor.set((e.admin_user["id"], token))
+    job = manager.submit("index", e.kb, e.a, launch=False)
+    assert token not in json.dumps(manager.state.jobs())
+    e.admin.post("/api/auth/logout")
+    manager.factory = lambda: e.kb
+    manager.execute(job, token)
+    stored = next(j for j in manager.state.jobs() if j["id"] == job["id"])
+    assert stored["state"] == "failed"

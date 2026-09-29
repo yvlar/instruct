@@ -39,3 +39,9 @@ state/
 backups/
 certs/
 *.tar.gz
+
+# Index dérivés et sorties navigateur
+.instruct-state/
+data/
+test-results/
+playwright-report/

@@ -1,6 +1,9 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { Documents as LibraryDocuments } from "./Documents";
+import "./library.css";
+import { SourcePreview, Source } from "./SourcePreview";
 
 type User = {
   id: number;
@@ -23,7 +26,9 @@ type Doc = {
 type Result = {
   answer: string;
   grounded: boolean;
-  sources: { document: string; page: number; excerpt: string; url: string }[];
+  claims: { text: string; source_ids: string[] }[];
+  safety_notice: string;
+  sources: (Source & { url: string })[];
 };
 type Session = { user: User | null; csrf: string; access_version: number };
 type API = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
@@ -83,6 +88,7 @@ function App() {
     [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result | null>(null),
     [revision, setRevision] = useState(0);
+  const [preview, setPreview] = useState<Source | null>(null);
   const epoch = useRef(0);
   const applySession = useCallback((next: Session) => {
     if (
@@ -91,6 +97,7 @@ function App() {
     ) {
       epoch.current++;
       setResult(null);
+      setPreview(null);
       setRevision((r) => r + 1);
     }
     ref.current = next;
@@ -114,6 +121,7 @@ function App() {
         if (response.status === 401) {
           epoch.current++;
           setResult(null);
+      setPreview(null);
           ref.current = ref.current ? { ...ref.current, user: null } : null;
           setSession(ref.current);
         }
@@ -168,6 +176,7 @@ function App() {
       await api("/api/auth/logout", "POST");
       epoch.current++;
       setResult(null);
+      setPreview(null);
       setSession(null);
       ref.current = null;
       await refresh();
@@ -179,6 +188,7 @@ function App() {
     const ticket = epoch.current;
     await run(async () => {
       setResult(null);
+      setPreview(null);
       const r = await api<Result>("/api/ask", "POST", { question });
       if (ticket === epoch.current) setResult(r);
     });
@@ -252,12 +262,13 @@ function App() {
         </section>
       ) : (
         <>
+          {preview && <div className="library"><SourcePreview source={preview} onClose={() => setPreview(null)} /></div>}
           <nav aria-label="Sections">
             {[
               ["ask", "Recherche"],
               ["documents", "Documents"],
               ["account", "Mon compte"],
-              ...(user.role === "admin" ? [["admin", "Administration"]] : []),
+              ...(user.role === "admin" ? [["admin", "Administration"], ["library", "Gestion avancée"]] : []),
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -302,17 +313,19 @@ function App() {
                       : "Information absente"}
                   </span>
                   <h3>Réponse</h3>
-                  <p className="answer">{result.answer}</p>
+                  {result.claims?.length ? <ul className="answer">{result.claims.map((claim, i) => <li key={i}>{claim.text} {claim.source_ids.map(id => <a key={id} href={`#source-${id}`}>[{id}]</a>)}</li>)}</ul> : <p className="answer">{result.answer}</p>}
+                  <p className="muted">{result.safety_notice}</p>
                   {!!result.sources.length && (
                     <>
                       <h3>Sources</h3>
                       <div className="sources">
                         {result.sources.map((s, i) => (
-                          <article key={i}>
+                          <article key={i} id={`source-${s.source_id}`}>
                             <a href={s.url} target="_blank" rel="noreferrer">
                               {s.document} — page {s.page}
                             </a>
                             <p>{s.excerpt}</p>
+                            <button onClick={() => setPreview(s)}>Ouvrir la source · p. {s.page}</button>
                           </article>
                         ))}
                       </div>
@@ -322,6 +335,7 @@ function App() {
               )}
             </>
           )}
+          {tab === "library" && user.role === "admin" && <div className="library"><LibraryDocuments onChange={() => setRevision(r => r + 1)} /></div>}
           {tab === "documents" && (
             <Documents
               key={`${user.id}-${revision}`}

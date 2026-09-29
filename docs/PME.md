@@ -265,13 +265,25 @@ encore manuelles. Une démonstration synthétique **restaurée** peut être lanc
 Les comptes de **ce test uniquement** sont `admin`, `alice`, `bobby`, avec le mot de
 passe `Synthetic-password-123`; ils ne sont jamais créés par l’application normale.
 
-Cette branche part de la synchronisation fusionnée dans la PR #5. La recherche
-lexicale et la validation sémantique/structurée des citations des autres chantiers
-ne sont pas présentes dans ce socle. Les sources sont des passages récupérés
-vérifiables par document/page/version, mais le `grounded` historique n’est toujours
-pas une preuve que chaque phrase générée découle du passage. Aucune recherche
-lexicale non filtrée n’est ajoutée. Une future recherche lexicale devra recevoir
-la même liste de révisions autorisées avant de sélectionner ses candidats.
+Cette branche intègre désormais les PR #7 à #10 : régressions RAG, recherche
+hybride, citations extractives vérifiées et gestion documentaire. Les recherches
+Qdrant et FTS5 reçoivent uniquement les révisions autorisées avant sélection.
+Le serveur recontrôle les droits avant Ollama, après génération et à l’ouverture
+PDF. `grounded` vérifie la provenance des extraits, pas leur exactitude métier.
+
+La gestion avancée et ses routes `/api/library/*` sont réservées aux administrateurs.
+Les gestionnaires gardent les ajouts/remplacements/retraits et synchronisations
+unitaires de leur périmètre dans Documents. Une tâche administrative revérifie
+la session avant traitement et chaque lot; une déconnexion peut donc l’interrompre.
+Les tâches en échec/interrompues sont relançables. Aucun jeton n’est inscrit dans
+le journal des tâches. L’attribution des groupes reste explicite après un ajout
+par la gestion avancée.
+
+Le format d’archive passe à **2** : il inclut le registre documentaire, les tâches,
+les PDF préparés/archivés et toutes les versions. Les archives de format 1 sont
+refusées comme incompatibles. FTS5 est reconstruit depuis les passages Qdrant
+vérifiés pendant la restauration, sans Ollama. Les chemins documentaires et FTS5
+doivent aussi être distincts si vous restaurez dans une installation isolée.
 
 Il n’y a ni annuaire LDAP/SSO, ni MFA, ni cluster multi-hôtes, ni antivirus/OCR,
 ni ordonnanceur de sauvegardes, ni purge automatique des anciennes versions PDF.
@@ -284,3 +296,14 @@ de sécurité industrielle.
 Références techniques : [sessions Starlette](https://www.starlette.io/middleware/#sessionmiddleware),
 [Argon2](https://argon2-cffi.readthedocs.io/en/stable/howto.html),
 [correctif Starlette des limites de formulaires](https://github.com/Kludex/starlette/security/advisories/GHSA-82w8-qh3p-5jfq).
+
+### Mise à jour depuis la gestion documentaire de main
+
+Compose conserve le volume `document_state` existant, monté désormais dans
+`/state/document-manager`, ainsi que les PDF et Qdrant. Le nouveau volume
+`app_state` contient comptes, ACL, audit et FTS5. Conservez le même nom de projet
+Compose pour réutiliser les volumes. Ne supprimez aucun ancien volume pendant
+la migration. Créez l’administrateur, lancez une synchronisation puis attribuez
+explicitement les groupes : les documents importés restent privés par défaut.
+Le premier passage reconstruit FTS5 depuis Qdrant; les anciennes citations dont
+la révision change doivent être recherchées à nouveau.

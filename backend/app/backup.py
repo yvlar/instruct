@@ -16,7 +16,7 @@ from .documents import atomic_write, safe_path
 from .indexing import SCHEMA_VERSION, index_lock, require_completed
 from .security import DB_SCHEMA, SecurityStore, maintenance_lock, utc
 
-BACKUP_SCHEMA = 1
+BACKUP_SCHEMA = 2
 
 
 def checksum(path):
@@ -123,6 +123,9 @@ def backup(config, kb, archive):
                 root = Path(temp)
                 copy_tree(config.documents_path, root / "documents")
                 copy_tree(security.root / "versions", root / "versions")
+                copy_tree(config.document_state_path, root / "document-manager")
+                for lock in (root / "document-manager").glob("*.lock"):
+                    lock.unlink()
                 collections = export_index(kb, root)
                 security.audit(None, "backup.snapshot", "archive", "prepared")
                 with (
@@ -313,7 +316,12 @@ def restore(config, kb, archive, *, overwrite=False):
                         != collection["count"]
                     ):
                         raise ValueError("Restauration Qdrant incomplète")
-                kb.store.read()
+                _, restored_manifests = kb.store.read()
+                # FTS5 is derived entirely from the verified Qdrant snapshot.
+                kb.lexical.path.unlink(missing_ok=True)
+                kb.lexical.repair(
+                    kb.qdrant, config.qdrant_collection, restored_manifests
+                )
                 if docs.exists():
                     # Preserve the directory itself: it may be a Docker bind mount.
                     for child in docs.iterdir():
@@ -322,6 +330,16 @@ def restore(config, kb, archive, *, overwrite=False):
                         else:
                             child.unlink()
                 copy_tree(staged / "documents", docs)
+                manager_root = Path(config.document_state_path)
+                if manager_root.exists():
+                    for child in manager_root.iterdir():
+                        if child.name.endswith(".lock"):
+                            continue
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                copy_tree(staged / "document-manager", manager_root)
                 versions = state / "versions"
                 if versions.exists():
                     shutil.rmtree(versions)

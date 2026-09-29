@@ -15,9 +15,9 @@ from qdrant_client import models
 
 from .chunking import chunk_text
 
-SCHEMA_VERSION = 2
-PIPELINE_VERSION = 1  # Bump whenever normalization/extraction semantics change.
-CONTROL_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "instruct:index-control:v2"))
+SCHEMA_VERSION = 3
+PIPELINE_VERSION = 2  # Bump whenever normalization/extraction semantics change.
+CONTROL_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "instruct:index-control:v3"))
 
 
 class IndexErrorBase(RuntimeError):
@@ -135,8 +135,13 @@ class PdfSource:
                     raise DocumentError("SOURCE_CHANGED")
             with fitz.open(snapshot) as pdf:
                 for page_number, page in enumerate(pdf, start=1):
-                    for text in chunk_text(page.get_text(), self.size, self.overlap):
+                    for text in self.page_passages(page):
                         yield page_number, text
+
+    def page_passages(self, page):
+        blocks = page.get_text("blocks", sort=True)
+        page_text = "\n\n".join(block[4].strip() for block in blocks if block[6] == 0)
+        return chunk_text(page_text, self.size, self.overlap)
 
 
 class RevisionStore:
@@ -237,7 +242,9 @@ class RevisionStore:
         )
         return control
 
-    def publish(self, document: str, fingerprint: str, revision: str, chunks: int):
+    def publish(
+        self, document: str, fingerprint: str, revision: str, chunks: int, **metadata
+    ):
         require_completed(
             self.qdrant.upsert(
                 self.manifest_collection,
@@ -252,6 +259,7 @@ class RevisionStore:
                             "fingerprint": fingerprint,
                             "revision": revision,
                             "chunks": chunks,
+                            **metadata,
                         },
                     )
                 ],

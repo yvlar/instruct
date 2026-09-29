@@ -10,7 +10,8 @@
 | PyMuPDF | Extraction du texte d'une copie temporaire du PDF, page par page |
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
 | Qdrant | Passages vectoriels et manifeste sans vecteurs |
-| Ollama / Qwen | Génération de réponses à partir du contexte retrouvé |
+| SQLite FTS5 | Recherche lexicale locale des mêmes révisions |
+| Ollama / Qwen + `answering.py` | Sélection structurée de passages et rendu extractif côté serveur |
 
 ## Identité et compatibilité
 
@@ -40,8 +41,8 @@ incompatibles, même lorsque leur dimension est identique.
   empreinte, nombre de passages). L'identifiant du manifeste dépend du chemin.
 
 Le manifeste est lu avec une pagination de 128 points, sans vecteurs. Il ne
-contient pas le texte des PDF. Il reste la source de vérité des révisions Qdrant après un redémarrage; le
-catalogue SQLite doit aussi publier la même révision pour autoriser sa recherche.
+contient pas le texte des PDF. Il reste la seule source de vérité après un
+redémarrage; aucun état d'indexation n'est conservé uniquement en mémoire Python.
 Il faut sauvegarder/restaurer les deux collections ensemble, backend arrêté.
 La perte du manifeste avec des passages présents bloque l'index plutôt que de
 considérer arbitrairement les anciennes données comme actuelles.
@@ -71,7 +72,7 @@ considérer arbitrairement les anciennes données comme actuelles.
    les suppressions de fichiers manquants pour cet appel.
 9. Pour chaque PDF absent d'un inventaire stable, supprimer son manifeste; il
    devient immédiatement invisible aux prochaines recherches.
-10. Sans erreur de document, supprimer les points v2 dont la révision ne figure
+10. Sans erreur de document, supprimer les points v3 dont la révision ne figure
     dans aucun manifeste actif. Cette étape retire les anciennes versions et les
     passages abandonnés lors d'une interruption. Elle n'efface pas les points
     d'un autre schéma. En cas d'échec, retourner `cleanup_pending: true`.
@@ -105,18 +106,33 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 ## Question-réponse et concurrence
 
 1. Prendre le verrou partagé, lire les manifestes et vérifier l'identité du modèle.
-2. Transformer la question en vecteur; rechercher uniquement les révisions actives
-   avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
+2. Transformer la question en vecteur; rechercher les révisions actives dans
+   Qdrant et SQLite FTS5 avant la limite de candidats. Fusionner les résultats
+   par priorité aux termes exacts et rang RRF, puis appliquer `TOP_K` et les budgets.
 3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
    appeler le modèle de conversation et répondre « information non trouvée ».
-4. Transmettre contexte et références à Qwen; conserver les garde-fous du prompt.
-5. Retourner la réponse et les sources avec leur chemin relatif.
+4. Préparer des passages entiers bornés, chacun avec un identifiant stable.
+   Refuser les injections évidentes; séparer le prompt fixe des données non fiables.
+5. Faire une unique génération JSON extractive, sans réflexion étendue, avec
+   limites explicites de contexte et de sortie.
+6. Vérifier la complétude JSON, le statut de suffisance, chaque identifiant et
+   chaque extrait exact. Refuser l'ensemble si un contrôle échoue.
+7. Recontrôler les révisions sélectionnées sous verrou après génération.
+8. Retourner les éléments cités, uniquement leurs sources avec chemin relatif,
+   page et passage, et le rappel officiel fixé côté serveur.
+
+Le [guide hybride](HYBRID_RETRIEVAL.md) décrit SQLite, RRF et le schéma 3.
+Chaque lot est écrit dans les deux index avant publication du manifeste;
+SQLite se répare depuis Qdrant sans nouvel embedding. Un manifeste v2 impose
+une nouvelle collection, sans migration silencieuse.
+
+Le contrat et ses limites sémantiques sont décrits dans [GROUNDING.md](GROUNDING.md).
+`grounding.py` ne démontre pas la vérité d'une réponse; il vérifie sa provenance.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
-Une révocation de droits ou une modification de la révision pendant la génération
-fait retirer la réponse complète. Les URL de sources contrôlent les droits à
-chaque ouverture, y compris pour les anciennes versions PDF.
+Si une synchronisation modifie ou retire une révision sélectionnée pendant la
+génération, la réponse est refusée; une ingestion encore active produit `INDEX_BUSY`.
 
 `portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
 partage `/state/locks` entre conteneurs du même projet, et refuse de créer
@@ -127,7 +143,7 @@ Une requête Qdrant directe sans le filtre applicatif n'offre pas ces garanties.
 
 ## Migration et suppression complète
 
-Un index historique non vide sans manifeste v2 retourne `LEGACY_INDEX` sans
+Un index historique non vide sans manifeste compatible retourne `LEGACY_INDEX` sans
 modification. Aucun rattachement par nom de fichier n'est tenté. Choisir une
 nouvelle `QDRANT_COLLECTION`, reconstruire depuis les PDF, valider les sources et
 les compteurs, puis conserver l'ancienne collection jusqu'à décision explicite de
@@ -144,8 +160,20 @@ ancien index et ne change pas le modèle associé à la collection.
 - Une similarité vectorielle ne prouve ni l'exactitude ni l'actualité d'un document.
 - Le LLM peut encore interpréter incorrectement un passage.
 - Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
-- Le frontend seul est publié sur loopback; authentification et ACL backend obligatoires.
-- SQLite ajoute comptes, sessions, groupes, catalogue et audit; voir [PME.md](PME.md).
-- Les recherches recoupent manifestes Qdrant et révisions autorisées du catalogue SQLite.
-- Les filtres sont revalidés avant le contexte et avant la réponse, sans cache partagé.
+- Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
 - Les volumes Docker conservent localement modèles, manifeste et vecteurs.
+
+## Sessions et périmètres PME
+
+`security.py` fournit SQLite, Argon2 et les sessions révocables. Le backend est
+créé par `app.main:create_app --factory`; toutes les routes sensibles vérifient
+la session. Les candidats vectoriels et FTS5 sont filtrés par les révisions
+calculées côté serveur depuis les groupes. `grounding.py` valide les extraits
+structurés; aucune réponse n’est conservée si ses droits changent en génération.
+
+`documents.py` porte le catalogue ACL et les opérations par périmètre.
+`document_manager.py` conserve le worker et son journal de tâches. Les routes
+`/api/library/*` et Gestion avancée sont administratives; les tâches revérifient
+la session. Ces deux interfaces partagent les PDF, index et verrous.
+La sauvegarde de format 2 inclut leurs états; FTS5 est reconstruit à la restauration.
+Voir [PME](PME.md) pour l’installation et les limites.

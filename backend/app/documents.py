@@ -109,6 +109,9 @@ class Documents:
         target = safe_path(self.config.documents_path, path)
         ident = document_id(path)
         with index_lock(self.config):
+            state = getattr(self.kb.source, "state", None)
+            if state and state.records().get(path, {}).get("pending"):
+                raise HTTPException(409, "Un remplacement attend son indexation.")
             with self.security.connect() as db:
                 previous = db.execute(
                     "SELECT * FROM documents WHERE id=?", (ident,)
@@ -131,6 +134,13 @@ class Documents:
                 raise HTTPException(404, "Document introuvable.")
             self.inspect(data)
             atomic_write(target, data)
+            if (
+                state
+                and previous
+                and not previous["active"]
+                and user["role"] == "admin"
+            ):
+                state.record(path, removed=0, pending=None, error=None, archived=None)
             return self.record(
                 path,
                 data,
@@ -221,28 +231,37 @@ class Documents:
                     target = safe_path(self.config.documents_path, path)
                     if target.stat().st_size > self.config.max_pdf_bytes:
                         raise HTTPException(413, "PDF trop volumineux.")
-                    self.record(path, target.read_bytes(), actor=user["id"])
-                with self.security.transaction() as db:
-                    for row in db.execute(
-                        "SELECT id,path FROM documents WHERE active=1"
-                    ).fetchall():
-                        if row["path"] not in inventory and (
-                            scope is None or row["path"] in scope
-                        ):
-                            db.execute(
-                                "UPDATE documents SET active=0 WHERE id=?", (row["id"],)
-                            )
-                            self.security.event(
-                                db, user["id"], "document.remove", row["id"]
-                            )
                 result = await self.kb.ingest(
                     allowed_documents=scope,
                     lock_held=True,
                     allow_empty=allow_empty or ident is not None,
                     authorize=authorize,
                 )
+                failed = {e["document"] for e in result["errors"]}
+                if hasattr(self, "manager"):
+                    self.manager.finish_replacements(
+                        self.kb, only=doc["path"] if ident else None, exclude=failed
+                    )
                 _, manifests = self.kb.store.read()
                 failed = {e["document"] for e in result["errors"]}
+                for path in selected - failed:
+                    target = safe_path(self.config.documents_path, path)
+                    self.record(path, target.read_bytes(), actor=user["id"])
+                if not result["failed"]:
+                    with self.security.transaction() as db:
+                        for row in db.execute(
+                            "SELECT id,path FROM documents WHERE active=1"
+                        ).fetchall():
+                            if row["path"] not in manifests and (
+                                scope is None or row["path"] in scope
+                            ):
+                                db.execute(
+                                    "UPDATE documents SET active=0 WHERE id=?",
+                                    (row["id"],),
+                                )
+                                self.security.event(
+                                    db, user["id"], "document.remove", row["id"]
+                                )
                 with self.security.transaction() as db:
                     for path in selected - failed:
                         manifest = manifests.get(path)
@@ -279,3 +298,6 @@ class Documents:
         if hashlib.sha256(data).hexdigest() != hashed:
             raise HTTPException(503, "Intégrité du PDF non vérifiée.")
         return data
+
+
+from .document_manager import DocumentManager  # noqa: F401,E402

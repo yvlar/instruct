@@ -65,8 +65,24 @@ class FakeOllama:
         body = json.loads(request.content)
         if request.url.path == "/api/chat":
             self.chat_requests.append(body)
+            passages = json.loads(body["messages"][1]["content"])["PASSAGES"]
             return httpx.Response(
-                200, json={"message": {"content": "Réponse sourcée."}}
+                200,
+                json={
+                    "done": True,
+                    "done_reason": "stop",
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "status": "answered",
+                                "answer": [
+                                    {"source_id": p["source_id"], "quote": p["text"]}
+                                    for p in passages
+                                ],
+                            }
+                        )
+                    },
+                },
             )
         assert request.url.path == "/api/embed"
         assert isinstance(body["input"], list)
@@ -137,8 +153,10 @@ class FaultyQdrant:
 def env(tmp_path):
     config = Settings(
         _env_file=None,
+        state_path=str(tmp_path / "security"),
         documents_path=str(tmp_path / "documents"),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
         embedding_batch_size=2,
     )
     files = FakeFiles()

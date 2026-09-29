@@ -67,6 +67,8 @@ def main():
         target = config.model_copy(
             update={
                 "state_path": str(root / "restore-state"),
+                "document_state_path": str(root / "restore-state") + "-manager",
+                "lexical_index_path": str(root / "restore-state") + "-lexical",
                 "documents_path": str(root / "restore-documents"),
                 "index_lock_path": str(root / "restore-locks"),
                 "qdrant_collection": "restored",

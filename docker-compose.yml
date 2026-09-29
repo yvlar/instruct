@@ -16,6 +16,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      LEXICAL_INDEX_PATH: /state/lexical
+      DOCUMENT_STATE_PATH: /state/document-manager
       STATE_PATH: /state
       INDEX_LOCK_PATH: /state/locks
     volumes:
@@ -25,6 +27,7 @@ services:
         bind:
           create_host_path: false
       - app_state:/state
+      - document_state:/state/document-manager
     depends_on: [qdrant, ollama]
     networks: [private]
 
@@ -39,6 +42,7 @@ volumes:
   qdrant_data:
   ollama_data:
   app_state:
+  document_state:
 
 networks:
   private:

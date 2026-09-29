@@ -4,7 +4,7 @@
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
 
-Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de produire une réponse accompagnée du document, de la page et de l'extrait source.
+Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de sélectionner ceux qui répondent à la question. Le serveur affiche ces extraits avec leurs références vérifiées.
 
 > [!WARNING]
 > Ce projet aide à retrouver de l'information. Il ne remplace jamais une procédure officielle à jour, une formation, une analyse de risques, une consignation ou le jugement d'une personne qualifiée. Ne prenez aucune décision de sécurité uniquement à partir d'une réponse générée.
@@ -12,17 +12,16 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 ## Fonctionnalités
 
 - fonctionnement local, sans API d'IA externe;
-- comptes locaux, trois rôles et accès documentaire par groupes;
-- sessions révocables, journal d’audit et sauvegarde/restauration vérifiée;
-- interface française de connexion, documents et administration;
-- configuration réseau interne HTTPS (voir [guide PME](docs/PME.md));
+- écran **Documents** : ajout par bouton ou glisser-déposer, recherche, filtres et pagination;
+- tâches locales suivies dans l’interface, remplacement validé avant installation et retrait avec archive;
+- ouverture des sources à leur page et dans leur version exacte, avec téléchargement;
 - synchronisation incrémentale des PDF texte : ajout, modification et suppression;
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
-- recherche vectorielle avec Qdrant;
+- recherche hybride locale : Qdrant sémantique et SQLite FTS5 pour les termes exacts;
 - génération avec Qwen via Ollama;
-- réponses avec document, page, extrait et score de pertinence;
-- refus explicite lorsque les documents ne contiennent pas la réponse;
+- réponses extractives avec citations par élément, document, page et passage vérifiés;
+- refus prudent si les passages sont jugés insuffisants, ambigus ou si les citations sont invalides;
 - API FastAPI et interface React/TypeScript;
 - déploiement conteneurisé avec Docker Compose.
 
@@ -38,6 +37,11 @@ Question -> embedding -> recherche sémantique ------+
 
 La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+Les [tests de régression RAG et l'évaluation locale facultative](docs/RAG_REGRESSION.md)
+couvrent les citations, refus, valeurs exactes, PDF invalides et synchronisations.
+`grounded: true` atteste la provenance des extraits affichés, pas leur pertinence
+ni l'exactitude métier du document.
+
 ## Prérequis
 
 - Git;
@@ -48,27 +52,84 @@ La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITEC
 
 ## Installation rapide
 
-Suivre le [guide d’installation PME](docs/PME.md) pour le premier administrateur,
-les modèles locaux, les droits et les sauvegardes. Aucun compte ni mot de passe
-n’est créé par défaut. L’interface locale est `http://localhost:3000`; l’API passe
-par la même origine. Les ports backend, Qdrant et Ollama ne sont plus publiés.
+Cette version exige une connexion locale et une attribution explicite des droits.
+Suivez [le guide PME](docs/PME.md) pour le premier administrateur, les groupes,
+HTTPS et la restauration. Aucun compte n’est créé par défaut.
 
-## Ajouter des documents
 
-Déposez uniquement des documents que vous êtes autorisé à traiter dans l'un des dossiers suivants :
-
-```text
-documents/instructions/
-documents/securite/
-documents/maintenance/
-documents/formation/
+```bash
+git clone https://github.com/yvlar/instruct.git
+cd instruct
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.models.yml up -d qdrant ollama
+docker compose exec ollama ollama pull qwen3:8b
+docker compose exec ollama ollama pull nomic-embed-text
+docker compose up -d --build --force-recreate
+docker compose exec backend python -m app.admin create-admin votre-identifiant
 ```
 
-Les documents sont exclus de Git par défaut. Connectez-vous comme administrateur,
-ouvrez **Documents → Synchroniser le dossier local**, puis attribuez explicitement
-les groupes de chaque PDF. Ils restent privés par défaut. L’interface permet aussi
-l’ajout, le remplacement, l’indexation individuelle et le retrait dans le périmètre
-accordé au gestionnaire.
+Pour activer explicitement le GPU NVIDIA :
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+Vérification :
+
+```bash
+docker compose exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/healthz').read().decode())"
+```
+
+Ouvrez ensuite <http://localhost:3000>. Connectez-vous avec le compte créé localement. Les ports backend/Qdrant/Ollama ne sont pas publiés.
+
+## Gérer les documents sans commandes curl
+
+L’onglet **Documents** permet les opérations dans le périmètre du gestionnaire
+et l’attribution des groupes par l’administrateur. **Gestion avancée**, réservé
+aux administrateurs, conserve les tâches persistantes, les filtres, la pagination
+et les remplacements préparés décrits ci-dessous. Les documents ajoutés dans
+cet onglet restent sans groupes : attribuez leurs droits dans **Documents**.
+
+
+Après le démarrage, ouvrez <http://localhost:3000> puis **Documents** :
+
+1. Cliquez sur **Ajouter un PDF** ou glissez un fichier dans la zone d’ajout.
+2. Vérifiez son nom et son dossier relatif (par exemple `maintenance`). Cliquez sur
+   **Enregistrer le PDF**, puis **Indexer** dans sa ligne.
+3. Suivez les étapes connues et le nombre de documents traités. L’interface reste
+   accessible pendant le travail. Un seul traitement modifie les documents à la fois.
+4. Quand le document est **Disponible**, revenez à **Recherche**. Dans les sources,
+   cliquez sur **Ouvrir la source · p. N**. Le numéro reste affiché, avec des liens
+   d’ouverture et de téléchargement si le lecteur PDF ignore `#page=N` sur mobile.
+5. **Remplacer** prépare un nouveau PDF au même chemin. L’ancien fichier reste en
+   place pendant la validation et l’indexation. En cas d’échec, utilisez **Réessayer**.
+   Les copies des versions déjà indexées sont conservées pour les anciennes sources.
+6. **Retirer**, puis la confirmation, archive le fichier hors du dossier indexé et
+   retire ses passages actifs. Attendez **Terminé** : une erreur partielle nécessite
+   une nouvelle tentative. La synchronisation ne réactive jamais ce chemin retiré.
+
+**Synchroniser les documents** traite aussi les ajouts, modifications et suppressions
+faits directement sur le disque. **Réindexer** vérifie un document précis et conserve
+l’optimisation incrémentale : aucun nouvel embedding pour un fichier inchangé.
+
+Les états sont **À indexer**, **En cours**, **Disponible**, **Modification détectée**
+et **Erreur**. Les détails affichent les empreintes SHA-256 du fichier et de la
+version indexée : ce sont des identifiants techniques, **jamais une révision officielle
+ni une approbation métier**. Les pages et dates inconnues sont indiquées comme telles.
+
+Les PDF doivent être valides, non chiffrés, non endommagés, et ne pas dépasser
+`MAX_PDF_BYTES` (50 Mio par défaut). Un nom existant nécessite un remplacement
+explicite ou un autre nom. Les chemins absolus, traversées, composants cachés et liens
+symboliques sont refusés. Les fichiers PDF scannés sans texte nécessitent un OCR en amont.
+
+Les documents sont exclus de Git. Les sous-dossiers suggérés sont `instructions`,
+`securite`, `maintenance` et `formation`. L’API historique reste utilisable :
+
+```bash
+# Depuis l’interface authentifiée : Documents → Synchroniser.
+# Une intégration HTTP doit fournir le cookie, Origin et X-CSRF-Token.
+curl -X POST http://localhost:3000/api/ingest
+```
 
 Chaque synchronisation compare le contenu SHA-256 et les paramètres d'indexation.
 Un PDF inchangé ne subit aucune extraction, aucun embedding ni aucun nouvel upsert.
@@ -93,16 +154,16 @@ interne de l'exception. Une réponse HTTP 200 peut être partielle : vérifiez
 `failed == 0` et `cleanup_pending == false`. Les erreurs globales (dossier absent,
 index incompatible, service indisponible, index occupé) retournent HTTP 503.
 
-Une nouvelle version ne devient recherchable qu’après publication complète de ses
-passages et mise à jour du catalogue. En cas d’échec, les versions PDF restent
-stockées; un PDF modifié non indexé est exclu des questions. Les passages incomplets
+Une nouvelle version ne devient visible qu'après l'écriture complète de ses
+passages. En cas d'échec, l'ancienne version reste stockée. Les passages incomplets
 ne sont jamais utilisés par `/api/ask`. Relancez simplement la même commande après
 une interruption. `cleanup_pending: true` signale un nettoyage physique à reprendre;
 les anciennes versions sont déjà exclues des réponses.
 
-### Supprimer des PDF
+### Suppressions faites directement sur le disque
 
-Retirez les fichiers voulus de `documents/`, puis relancez `/api/ingest`. Le retrait
+Privilégiez **Retirer** dans l’interface pour conserver une archive. Pour une suppression
+externe, retirez les fichiers voulus de `documents/`, puis relancez `/api/ingest`. Le retrait
 de leurs passages est effectué pendant cette synchronisation. Un dossier absent,
 illisible, ou vide alors que des documents sont indexés bloque les suppressions.
 Les liens symboliques vers des PDF ou des sous-dossiers sont refusés.
@@ -111,7 +172,7 @@ Pour supprimer **volontairement tous les PDF de l'index**, retirez d'abord les P
 du dossier, conservez le dossier présent et lisible, puis utilisez explicitement :
 
 ```bash
-POST /api/ingest?allow_empty=true  # session administrateur + origine + CSRF requis
+curl -X POST 'http://localhost:3000/api/ingest?allow_empty=true'
 ```
 
 Cette option autorise uniquement le cas vide; elle ne contourne ni une erreur de
@@ -122,14 +183,14 @@ pour vider un index dont le dossier source est vide.
 ### Migrer un index existant ou changer de modèle d'embeddings
 
 Les anciens points ne contiennent que le nom du fichier; il est impossible de
-retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste v2
+retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste compatible
 produit `LEGACY_INDEX`; il n'est ni supprimé ni interrogé par la nouvelle version.
 La reconstruction dans une **nouvelle collection** est obligatoire :
 
 1. Conservez une sauvegarde des PDF et de Qdrant; arrêtez le backend avec
    `docker compose stop backend`.
 2. Dans `.env`, remplacez `QDRANT_COLLECTION=work_instructions` par un nom encore
-   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_v2`.
+   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_hybrid_v3`.
 3. Exécutez `docker compose up -d --build backend` puis l'appel `/api/ingest`.
 4. Vérifiez `failed: 0`, `cleanup_pending: false`, puis une question avec ses sources.
    Relancez l'ingestion et vérifiez `unchanged` et `chunks: 0`.
@@ -145,18 +206,94 @@ mélanger des espaces vectoriels. Modifier `CHUNK_SIZE`, `CHUNK_OVERLAP` ou la v
 d'extraction entraîne une réindexation lors de la prochaine synchronisation.
 Modifier la taille des lots ou le modèle de conversation ne la déclenche pas.
 
-Posez vos questions dans l’interface après connexion. Les sources ouvrent la
-version PDF citée à la bonne page, sous réserve des droits actuels.
+Exemple de question :
+
+```bash
+curl -X POST http://localhost:3000/api/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Quelle est la procédure de démarrage?"}'
+```
 
 ## API
 
 | Méthode | Route | Description |
 |---|---|---|
 | `GET` | `/healthz` | Vérifie que l'API répond |
-| `POST` | `/api/ingest` | Administrateur uniquement. Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
-| `POST` | `/api/ask` | Session requise; recherche limitée aux documents autorisés |
+| `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
+| `POST` | `/api/ask` | Extraits vérifiés, claims et sources avec identifiant, version et page |
+| `GET` | `/api/library/documents` | Liste : `q`, `status`, `page`, `page_size`, tâches récentes |
+| `PUT` | `/api/library/documents` | Corps PDF brut, `Content-Type: application/pdf`; `name`, `folder`, `replace_id` explicite |
+| `POST` | `/api/library/documents/sync` | Lance une synchronisation; réponse 202 avec la tâche |
+| `POST` | `/api/library/documents/{id}/index` | Lance l’indexation incrémentale d’un document |
+| `POST` | `/api/library/documents/{id}/remove` | Lance l’archivage et le retrait |
+| `POST` | `/api/library/document-jobs/{id}/retry` | Relance une tâche échouée ou interrompue |
+| `GET` | `/api/documents/{id}/source` | Vérifie la `version` et la `page` avant ouverture |
+| `GET` | `/api/documents/{id}/file` | PDF exact, paramètres `version`, `page`, `download=true` facultatif |
 
-Voir [le guide PME](docs/PME.md#api-et-développement) pour les autres routes et CSRF.
+## Persistance, permissions et reprise
+
+| Emplacement | Contenu | Persistance |
+|---|---|---|
+| `./documents` → `/documents` | PDF courants, montage désormais en lecture-écriture | Dossier de l’hôte |
+| `app_state` → `/state/document-manager` | Registre SQLite, tâches, remplacements préparés, versions PDF et archives | Volume Docker nommé |
+| `app_state` → `/state/locks` | Verrous de mutation de l’index | Volume Docker nommé |
+| `app_state` → `/state/lexical` | Index SQLite FTS5, reconstructible depuis Qdrant | Volume Docker nommé |
+| `qdrant_data` | Passages et manifestes Qdrant | Volume Docker nommé |
+| `ollama_data` | Modèles locaux | Volume Docker nommé |
+
+Utilisez les commandes cohérentes de sauvegarde/restauration du [guide PME](docs/PME.md), incluant comptes, droits et audit. `docker compose down` conserve
+les volumes; **`down -v` les détruit**, y compris les archives et versions citées.
+Ne placez jamais `DOCUMENT_STATE_PATH` à l’intérieur de `DOCUMENTS_PATH`.
+Le système de fichiers de l’image backend est en lecture seule; seuls les montages
+ci-dessus et `/tmp` sont inscriptibles. Avec les
+permissions hôte usuelles, le conteneur écrit en tant que root : les nouveaux fichiers
+peuvent appartenir à root sur Linux. Donnez au dossier documentaire les droits adaptés
+à votre déploiement; aucun `chmod 777` n’est nécessaire.
+
+Un **unique processus backend** possède le registre. N’utilisez pas `uvicorn --workers`
+ni plusieurs répliques : le second processus est refusé. Les tâches s’exécutent dans
+un fil de travail unique, sans Redis, Celery ni second modèle. Deux envois HTTP au
+maximum sont acceptés simultanément. Au redémarrage, les tâches non terminées passent
+à **Traitement interrompu** et peuvent être relancées; les fichiers préparés restent
+conservés. `/api/ingest` partage les verrous et refuse les conflits avec les tâches UI.
+
+Un retrait écrit d’abord une exclusion durable. Même si Qdrant échoue ensuite, ce
+chemin ne peut plus alimenter la recherche. **Réessayer** termine l’archivage et le
+nettoyage; un fichier recopié au même chemin reste exclu. Pour un nouvel ajout après
+retrait, choisissez explicitement un autre nom. La restauration d’archive n’a pas
+encore d’interface. Les PDF archivés se trouvent sous `archive/<identifiant>/` dans
+`app_state`; le registre conserve leur chemin documentaire d’origine.
+
+Les sources utilisent `document_id` et `version`; aucune route de lecture n’accepte
+un chemin arbitraire. La copie exacte est servie ou une erreur **410** explique son
+indisponibilité. Les anciennes réponses sans version doivent être régénérées après
+synchronisation. Aucun cache de réponses n’est introduit : réponses HTTP `no-store`,
+sources revérifiées après génération, et réponse affichée effacée après une mutation UI.
+
+`answer` reste une chaîne utilisable par les clients existants. `claims` relie
+chaque extrait à ses `source_ids`; `sources` contient uniquement les passages
+utilisés et leur `source_id`. `safety_notice` fournit le rappel officiel, même
+en cas de refus. L'interface affiche les liens de citation par élément.
+
+**`grounded` valide la provenance des extraits, pas leur vérité ni leur pertinence
+sémantique.** Un passage authentique peut être incomplet ou mal interprété.
+Consultez [le contrat, les limites et le banc de régression](docs/GROUNDING.md).
+
+## Recherche hybride et migration
+
+La recherche combine les embeddings Qdrant et SQLite FTS5 pour retrouver aussi
+les codes exacts, nombres et unités. Les passages conservent les titres, étapes
+et pages; le contexte est borné. Les références et extraits cités sont validés
+avant de retourner les sources utilisées. `grounded` indique une provenance
+validée, pas une garantie d'exactitude. Le score de recherche n'est pas une
+probabilité.
+
+**Le schéma 3 exige de reconstruire les index v2 dans une nouvelle collection.**
+Les anciens index sont conservés et refusés explicitement jusqu'à cette migration.
+Les modalités de synchronisation et de suppression volontaire restent identiques.
+
+Voir [recherche hybride](docs/HYBRID_RETRIEVAL.md) pour les réglages, la migration,
+les limites, le benchmark reproductible et les mesures réellement obtenues.
 
 ## Configuration
 
@@ -171,12 +308,23 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `CHUNK_SIZE` | `1400` | Taille cible en caractères, de 100 à 16000 |
 | `CHUNK_OVERLAP` | `250` | Chevauchement, inférieur à `CHUNK_SIZE` |
 | `INDEX_LOCK_PATH` | `/tmp/instruct-locks` | Verrous locaux; Compose impose le volume partagé `/state/locks` |
-| `MIN_SCORE` | `0.35` | Seuil minimal de pertinence |
-| `TOP_K` | `6` | Nombre maximal de passages récupérés |
+| `DOCUMENT_STATE_PATH` | `.instruct-state` | Registre et versions hors du dossier documentaire; Compose impose `/state/documents` |
+| `MAX_PDF_BYTES` | `52428800` | Limite serveur par PDF, vérifiée aussi en réception progressive |
+| `MIN_SCORE` | `0.35` | Seuil de similarité vectorielle, sans valeur de probabilité de vérité |
+| `TOP_K` | `4` | Nombre maximal de passages retenus |
+| `RETRIEVAL_CANDIDATES` | `24` | Candidats par méthode avant fusion |
+| `CONTEXT_MAX_CHARS` | `8000` | Budget de présélection sérialisée, avant les limites de génération |
+| `LEXICAL_INDEX_PATH` | `./data/lexical` | Index SQLite local; Compose utilise `/state/lexical` |
+| `MAX_CONTEXT_CHARS` | `3200` | Plafond du texte fourni au modèle; budget UTF-8 conservateur supplémentaire |
+| `MAX_PASSAGE_CHARS` | `1400` | Passage entier maximum; les passages trop longs sont omis |
+| `MAX_ANSWER_CHARS` | `1600` | Longueur cumulée maximale des extraits sélectionnés |
+| `MAX_RESPONSE_CHARS` | `6000` | Taille maximale du JSON accepté |
+| `OLLAMA_NUM_CTX` | `4096` | Fenêtre de contexte en tokens |
+| `OLLAMA_NUM_PREDICT` | `768` | Tokens de sortie maximum, JSON compris |
 
 ## Confidentialité et sécurité
 
-En configuration par défaut, les traitements restent sur la machine locale. Seule l’interface est liée à `127.0.0.1`. L’authentification et les droits sont obligatoires, y compris pour les appels directs à l’API. Le [guide PME](docs/PME.md) décrit HTTPS, les sessions, l’audit et les sauvegardes.
+En configuration par défaut, les traitements restent sur la machine locale. Les ports sont liés à `127.0.0.1` et ne doivent pas être exposés directement sur Internet. L'application ne possède ni authentification ni gestion multiutilisateur.
 
 Avant toute publication :
 
@@ -188,17 +336,17 @@ Avant toute publication :
 ## Limites actuelles
 
 - PDF texte seulement; les documents numérisés nécessitent un OCR;
-- indexation manuelle;
-- suppression répercutée au prochain appel manuel à `/api/ingest`;
+- indexation déclenchée depuis l’interface ou l’API, sans surveillance automatique du dossier;
+- aucune purge automatique des snapshots, archives ou tâches : surveillez l’espace disque;
+- les citations valident la provenance des extraits, sans garantir leur pertinence pour la situation réelle;
 - lecture du contenu des PDF pour calculer les empreintes, même sans changement;
 - une synchronisation à la fois; `/api/ask` renvoie `INDEX_BUSY` pendant celle-ci;
-- déploiement local sur un seul hôte : tous les processus doivent partager les
-  mêmes verrous; plusieurs hôtes indépendants ne sont pas pris en charge;
+- déploiement Docker Linux sur un seul hôte et un seul processus backend; les opérations de fichiers utilisent `openat`/`O_NOFOLLOW`; pour Windows et macOS, utilisez Docker;
 - une copie temporaire sur disque par PDF modifié; mémoire d'extraction limitée
   principalement à une page, plus un lot de vecteurs;
 - index et filtres de recherche gardent les métadonnées des documents en mémoire;
   cette approche vise un corpus local, pas des millions de documents;
-- sources récupérées vérifiables, mais pas encore de validation structurée de chaque affirmation du modèle;
+- aucun contrôle d'accès;
 - pas conçu ni certifié comme système de sécurité industrielle.
 
 ## Tests
@@ -210,6 +358,19 @@ pip install -r backend/requirements-dev.txt
 cp .env.example .env  # uniquement si vous n'avez pas déjà de configuration
 docker compose config --quiet
 ```
+
+Le parcours navigateur utilise les mêmes API, de vrais PDF synthétiques et Qdrant
+embarqué, avec Ollama contrôlé. Il vérifie ordinateur et mobile, ajout → indexation
+→ question → source/version/page → téléchargement → retrait → synchronisation :
+
+```bash
+(cd frontend && npx playwright install chromium && npm run test:e2e)
+```
+
+Le Python contenant les dépendances backend doit être présent dans `PATH`. Aucun
+service de production n’est contacté; `backend/tests/browser_app.py` crée un dossier
+temporaire et n’est jamais inclus dans l’image backend. Les ports 3000 et 8000 doivent
+être libres. Les captures sont dans [`docs/screenshots`](docs/screenshots).
 
 Les tests isolés simulent Ollama, les fichiers et les erreurs de Qdrant; ils utilisent
 également le moteur Qdrant embarqué pour vérifier les vrais filtres. Un test avec

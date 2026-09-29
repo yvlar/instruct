@@ -9,6 +9,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .documents import Documents
 from .indexing import IndexErrorBase
+from .grounding import refusal
+from .document_manager import DocumentManager
+from .document_storage import DocumentProblem
+from .library import register_library
+import asyncio
 from .schemas import Answer, IngestionResult, Question
 from .security import SecurityStore, maintenance_lock
 from .services import KnowledgeBase
@@ -72,7 +77,7 @@ class RequestGuard:
                 # Reject oversized direct-backend bodies before multipart parsing.
                 max_body = (
                     self.config.max_pdf_bytes + 1048576
-                    if scope["path"] == "/api/documents"
+                    if scope["path"] in {"/api/documents", "/api/library/documents"}
                     else 65536
                 )
                 try:
@@ -129,9 +134,20 @@ def create_app(config=None, *, kb=None):
     knowledge_base = kb or KnowledgeBase(config=config)
     documents = Documents(config, security, knowledge_base)
 
+    manager = DocumentManager(
+        config,
+        lambda: KnowledgeBase(config=config),
+        security=security,
+        catalogue=documents,
+    )
+
+    documents.manager = manager
+
     @asynccontextmanager
     async def lifespan(_):
+        manager.start()
         yield
+        await asyncio.to_thread(manager.close)
         await knowledge_base.close()
 
     app = FastAPI(
@@ -142,6 +158,7 @@ def create_app(config=None, *, kb=None):
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.library = manager
     app.state.security = security
     app.state.documents = documents
     app.state.knowledge_base = knowledge_base
@@ -162,6 +179,12 @@ def create_app(config=None, *, kb=None):
         if user["role"] != "admin":
             raise HTTPException(403, "Administration non autorisée.")
         return user
+
+    register_library(app, knowledge_base, admin)
+
+    @app.exception_handler(DocumentProblem)
+    async def document_error(_, exc):
+        return JSONResponse({"detail": exc.message}, exc.status)
 
     @app.exception_handler(IndexErrorBase)
     async def index_error(_, exc):
@@ -382,6 +405,25 @@ def create_app(config=None, *, kb=None):
             },
         )
 
+    @app.get("/api/documents/{ident}/source")
+    async def source_info(
+        ident: str, version: str, page: int = 1, user=Depends(current)
+    ):
+        documents.read(ident, user, version)
+        with security.connect() as db:
+            row = db.execute(
+                "SELECT pages FROM versions WHERE document_id=? AND hash=?",
+                (ident, version),
+            ).fetchone()
+        if not row or not 1 <= page <= row[0]:
+            raise HTTPException(404, "Page introuvable.")
+        return {
+            "document_id": ident,
+            "version": version,
+            "page": page,
+            "url": f"/api/documents/{ident}/file?version={version}&page={page}",
+        }
+
     @app.post("/api/documents/{ident}/sync", response_model=IngestionResult)
     async def sync(ident: str, request: Request, user=Depends(current)):
         try:
@@ -390,7 +432,7 @@ def create_app(config=None, *, kb=None):
             )
             security.require_document(ident, current(request), manage=True)
             return result
-        except (HTTPException, IndexErrorBase):
+        except (HTTPException, IndexErrorBase, DocumentProblem):
             raise
         except Exception as exc:
             raise HTTPException(
@@ -400,12 +442,13 @@ def create_app(config=None, *, kb=None):
     @app.post("/api/ingest", response_model=IngestionResult)
     async def ingest(request: Request, allow_empty: bool = False, user=Depends(admin)):
         try:
-            result = await documents.synchronize(
-                user, allow_empty=allow_empty, resolve_user=lambda: current(request)
-            )
+            with manager.admission():
+                result = await documents.synchronize(
+                    user, allow_empty=allow_empty, resolve_user=lambda: current(request)
+                )
             admin(current(request))
             return result
-        except (HTTPException, IndexErrorBase):
+        except (HTTPException, IndexErrorBase, DocumentProblem):
             raise
         except Exception as exc:
             raise HTTPException(
@@ -427,22 +470,14 @@ def create_app(config=None, *, kb=None):
                 or s.get("revision") != allowed[s["document"]]
                 for s in result["sources"]
             ):
-                return {
-                    "answer": "Les droits ont changé; relancez la recherche.",
-                    "grounded": False,
-                    "sources": [],
-                }
+                return refusal()
             by_path = {d["path"]: d for d in documents.list(current(request))}
             if any(
                 source["document"] not in by_path
                 or source.get("revision") != by_path[source["document"]]["revision"]
                 for source in result["sources"]
             ):
-                return {
-                    "answer": "Les droits ont changé; relancez la recherche.",
-                    "grounded": False,
-                    "sources": [],
-                }
+                return refusal()
             for source in result["sources"]:
                 doc = by_path[source["document"]]
                 source["document_id"] = doc["id"]
@@ -451,7 +486,7 @@ def create_app(config=None, *, kb=None):
                     f"/api/documents/{doc['id']}/file?version={doc['indexed_hash']}#page={source['page']}"
                 )
             return result
-        except (HTTPException, IndexErrorBase):
+        except (HTTPException, IndexErrorBase, DocumentProblem):
             raise
         except Exception as exc:
             raise HTTPException(
