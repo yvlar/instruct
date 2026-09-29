@@ -53,5 +53,7 @@ jobs:
         run: cp .env.example .env
       - name: Valider Docker Compose
         run: docker compose config --quiet
+      - name: Valider la configuration GPU
+        run: docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
       - name: Construire les images applicatives
         run: docker compose build backend frontend

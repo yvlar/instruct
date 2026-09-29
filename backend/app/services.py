@@ -6,6 +6,14 @@ import httpx
 from qdrant_client import QdrantClient, models
 
 from .config import settings
+from .grounding import (
+    SYSTEM_PROMPT,
+    GeneratedAnswer,
+    model_message,
+    prepare_passages,
+    refusal,
+    verified_answer,
+)
 from .indexing import (
     PIPELINE_VERSION,
     SCHEMA_VERSION,
@@ -18,15 +26,6 @@ from .indexing import (
     index_lock,
     require_completed,
 )
-
-SYSTEM_PROMPT = """Tu es un assistant d'instructions de travail industrielles.
-Réponds uniquement avec le CONTEXTE fourni. N'invente jamais une étape, une valeur,
-une consigne de sécurité ou un équipement. Si le contexte est insuffisant, réponds
-exactement : « Information non trouvée dans les instructions disponibles. »
-Cite les sources dans le texte sous la forme [document, p. X]. Réponds en français,
-clairement et sans ajouter de connaissance générale. Rappelle de vérifier la version
-officielle du document avant d'exécuter une procédure.
-"""
 
 
 class KnowledgeBase:
@@ -288,45 +287,37 @@ class KnowledgeBase:
                     score_threshold=self.settings.min_score,
                     with_payload=True,
                 ).points
-        if not hits:
-            return {
-                "answer": "Information non trouvée dans les instructions disponibles.",
-                "sources": [],
-                "grounded": False,
-            }
-        context = "\n\n".join(
-            f"SOURCE {i}: [{h.payload['document']}, p. {h.payload['page']}]\n{h.payload['text']}"
-            for i, h in enumerate(hits, start=1)
-        )
+        passages = prepare_passages(hits, question, self.settings)
+        if not passages:
+            return refusal()
+        output_schema = GeneratedAnswer.model_json_schema()
+        output_schema["$defs"]["Selection"]["properties"]["source_id"]["enum"] = [
+            passage.source_id for passage in passages
+        ]
         response = await self.http.post(
             f"{self.settings.ollama_url}/api/chat",
             json={
                 "model": self.settings.ollama_model,
                 "stream": False,
+                "think": False,
+                "format": output_schema,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"CONTEXTE:\n{context}\n\nQUESTION:\n{question}",
-                    },
+                    {"role": "user", "content": model_message(question, passages)},
                 ],
-                "options": {"temperature": 0.1},
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": self.settings.ollama_num_ctx,
+                    "num_predict": self.settings.ollama_num_predict,
+                },
             },
         )
         response.raise_for_status()
-        return {
-            "answer": response.json()["message"]["content"],
-            "grounded": True,
-            "sources": [
-                {
-                    "document": h.payload["document"],
-                    "page": h.payload["page"],
-                    "excerpt": h.payload["text"][:300],
-                    "score": round(h.score, 3),
-                }
-                for h in hits
-            ],
-        }
+        try:
+            envelope = response.json()
+        except ValueError:
+            return refusal()
+        return verified_answer(envelope, passages, self.settings)
 
 
 knowledge_base = KnowledgeBase()

@@ -6,16 +6,24 @@ class Question(BaseModel):
 
 
 class Source(BaseModel):
+    source_id: str
     document: str
     page: int
     excerpt: str
     score: float
 
 
+class Claim(BaseModel):
+    text: str
+    source_ids: list[str]
+
+
 class Answer(BaseModel):
     answer: str
     sources: list[Source]
     grounded: bool
+    claims: list[Claim]
+    safety_notice: str
 
 
 class IngestionError(BaseModel):

@@ -109,8 +109,17 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
    avec un filtre Qdrant **avant** l'application de `TOP_K` et `MIN_SCORE`.
 3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
    appeler le modèle de conversation et répondre « information non trouvée ».
-4. Transmettre contexte et références à Qwen; conserver les garde-fous du prompt.
-5. Retourner la réponse et les sources avec leur chemin relatif.
+4. Préparer des passages entiers bornés, chacun avec un identifiant stable.
+   Refuser les injections évidentes; séparer le prompt fixe des données non fiables.
+5. Faire une unique génération JSON extractive, sans réflexion étendue, avec
+   limites explicites de contexte et de sortie.
+6. Vérifier la complétude JSON, le statut de suffisance, chaque identifiant et
+   chaque extrait exact. Refuser l'ensemble si un contrôle échoue.
+7. Retourner les éléments cités, uniquement leurs sources avec chemin relatif,
+   page et passage, et le rappel officiel fixé côté serveur.
+
+Le contrat et ses limites sémantiques sont décrits dans [GROUNDING.md](GROUNDING.md).
+`grounding.py` ne démontre pas la vérité d'une réponse; il vérifie sa provenance.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
