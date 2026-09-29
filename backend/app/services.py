@@ -498,6 +498,3 @@ class KnowledgeBase:
                 source["document_id"] = document_id(source["document"])
                 source["version"] = current[source["document"]].get("file_hash")
         return result
-
-
-knowledge_base = KnowledgeBase()
