@@ -1,5 +1,6 @@
 import math
 import uuid
+from contextlib import nullcontext
 
 import fitz
 import httpx
@@ -112,13 +113,19 @@ class KnowledgeBase:
                 "QDRANT_COLLECTION pour ne pas mélanger les espaces vectoriels."
             )
 
-    async def write_batch(self, document, revision, fingerprint, batch, start, size):
+    async def write_batch(
+        self, document, revision, fingerprint, batch, start, size, authorize=None
+    ):
+        if authorize:
+            authorize(document)
         try:
             vectors = await self.embed_many([text for _, text in batch])
             if any(len(vector) != size for vector in vectors):
                 raise ValueError("Embedding dimension changed")
         except Exception as exc:
             raise DocumentError("EMBEDDING_FAILED") from exc
+        if authorize:
+            authorize(document)
         points = [
             models.PointStruct(
                 id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{revision}:{start + index}")),
@@ -147,7 +154,9 @@ class KnowledgeBase:
         except Exception as exc:
             raise DocumentError("QDRANT_WRITE_FAILED") from exc
 
-    async def stage_document(self, document, file_hash, fingerprint, revision, size):
+    async def stage_document(
+        self, document, file_hash, fingerprint, revision, size, authorize=None
+    ):
         batch = []
         count = 0
         try:
@@ -155,13 +164,13 @@ class KnowledgeBase:
                 batch.append(passage)
                 if len(batch) == self.settings.embedding_batch_size:
                     await self.write_batch(
-                        document, revision, fingerprint, batch, count, size
+                        document, revision, fingerprint, batch, count, size, authorize
                     )
                     count += len(batch)
                     batch.clear()
             if batch:
                 await self.write_batch(
-                    document, revision, fingerprint, batch, count, size
+                    document, revision, fingerprint, batch, count, size, authorize
                 )
                 count += len(batch)
         except DocumentError:
@@ -172,10 +181,27 @@ class KnowledgeBase:
             raise DocumentError("NO_TEXT")
         return count
 
-    async def ingest(self, *, allow_empty: bool = False) -> dict:
-        with index_lock(self.settings):
-            inventory = self.source.inventory()
+    async def ingest(
+        self,
+        *,
+        allow_empty: bool = False,
+        allowed_documents=None,
+        lock_held=False,
+        authorize=None,
+    ) -> dict:
+        with nullcontext() if lock_held else index_lock(self.settings):
+            full_inventory = self.source.inventory()
+            inventory = {
+                p: v
+                for p, v in full_inventory.items()
+                if allowed_documents is None or p in allowed_documents
+            }
             control, manifests = self.store.read()
+            manifests = {
+                p: v
+                for p, v in manifests.items()
+                if allowed_documents is None or p in allowed_documents
+            }
             if not inventory and manifests and not allow_empty:
                 raise IndexErrorBase(
                     "EMPTY_DOCUMENTS: index conservé. Pour une suppression totale volontaire, "
@@ -210,6 +236,8 @@ class KnowledgeBase:
                 }
             )
             for document in sorted(inventory):
+                if authorize:
+                    authorize(document)
                 try:
                     try:
                         file_hash = self.source.fingerprint(document)
@@ -227,12 +255,15 @@ class KnowledgeBase:
                         fingerprint,
                         revision,
                         control["vector_size"],
+                        authorize,
                     )
                     # Verify content again before publishing a stable on-disk snapshot.
                     if self.source.fingerprint(document) != file_hash:
                         raise DocumentError("SOURCE_CHANGED")
                     if await self.embedding_identity() != identity:
                         raise DocumentError("EMBEDDING_MODEL_CHANGED")
+                    if authorize:
+                        authorize(document)
                     try:
                         self.store.publish(document, fingerprint, revision, count)
                     except Exception as exc:
@@ -250,7 +281,7 @@ class KnowledgeBase:
                         }
                     )
             # Never derive deletions from a changing or partially unreadable tree.
-            if self.source.inventory() != inventory:
+            if self.source.inventory() != full_inventory:
                 raise IndexErrorBase(
                     "DOCUMENTS_CHANGED: relancez la synchronisation; suppressions annulées."
                 )
@@ -274,20 +305,52 @@ class KnowledgeBase:
                     result["cleanup_pending"] = True
             return result
 
-    async def ask(self, question: str) -> dict:
+    async def ask(self, question: str, *, authorized_documents=None) -> dict:
         with index_lock(self.settings, shared=True):
             control, manifests = self.store.read()
+            if authorized_documents is not None:
+                allowed = authorized_documents()
+                manifests = {
+                    p: m
+                    for p, m in manifests.items()
+                    if p in allowed
+                    and (not isinstance(allowed, dict) or m["revision"] == allowed[p])
+                }
             hits = []
             if manifests:
                 self.check_identity(control, await self.embedding_identity())
-                hits = self.qdrant.query_points(
-                    self.settings.qdrant_collection,
-                    query=await self.embed(question),
-                    query_filter=active_filter(manifests),
-                    limit=self.settings.top_k,
-                    score_threshold=self.settings.min_score,
-                    with_payload=True,
-                ).points
+                vector = await self.embed(question)
+                if authorized_documents is not None:
+                    allowed = authorized_documents()
+                    manifests = {
+                        p: m
+                        for p, m in manifests.items()
+                        if p in allowed
+                        and (
+                            not isinstance(allowed, dict) or m["revision"] == allowed[p]
+                        )
+                    }
+                if manifests:
+                    hits = self.qdrant.query_points(
+                        self.settings.qdrant_collection,
+                        query=vector,
+                        query_filter=active_filter(manifests),
+                        limit=self.settings.top_k,
+                        score_threshold=self.settings.min_score,
+                        with_payload=True,
+                    ).points
+        # Recheck after awaited embeddings and before any context reaches Ollama.
+        if authorized_documents is not None:
+            allowed = authorized_documents()
+            hits = [
+                h
+                for h in hits
+                if h.payload.get("document") in allowed
+                and (
+                    not isinstance(allowed, dict)
+                    or h.payload.get("revision") == allowed[h.payload["document"]]
+                )
+            ]
         if not hits:
             return {
                 "answer": "Information non trouvée dans les instructions disponibles.",
@@ -314,12 +377,29 @@ class KnowledgeBase:
             },
         )
         response.raise_for_status()
+        # Revoke the entire answer if any of its context was revoked during generation.
+        if authorized_documents is not None:
+            allowed = authorized_documents()
+            if any(
+                h.payload.get("document") not in allowed
+                or (
+                    isinstance(allowed, dict)
+                    and h.payload.get("revision") != allowed[h.payload["document"]]
+                )
+                for h in hits
+            ):
+                return {
+                    "answer": "Les droits ont changé; relancez la recherche.",
+                    "grounded": False,
+                    "sources": [],
+                }
         return {
             "answer": response.json()["message"]["content"],
             "grounded": True,
             "sources": [
                 {
                     "document": h.payload["document"],
+                    "revision": h.payload["revision"],
                     "page": h.payload["page"],
                     "excerpt": h.payload["text"][:300],
                     "score": round(h.score, 3),

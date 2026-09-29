@@ -462,19 +462,34 @@ def test_real_inventory_rejects_missing_unreadable_or_symlink_tree(
         source.inventory()
 
 
-def test_api_response_retains_legacy_counts_and_supports_explicit_empty(
-    env, monkeypatch
-):
-    from app import main
+def test_api_response_retains_legacy_counts_and_supports_explicit_empty(env, tmp_path):
+    import fitz
+    from app.main import create_app
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr(main, "knowledge_base", env.kb)
-    with TestClient(main.app) as client:
+    env.config.state_path = str(tmp_path / "state")
+    root = tmp_path / "documents"
+    root.mkdir()
+    pdf = root / "test.pdf"
+    with fitz.open() as document:
+        document.new_page().insert_text((72, 72), "Instruction de test.")
+        document.save(pdf)
+    env.kb.source = PdfSource(str(root), 1400, 250)
+    app = create_app(env.config, kb=env.kb)
+    app.state.security.create_user("admin", "Test-password-123", "admin")
+    with TestClient(app) as client:
+        client.headers["origin"] = env.config.app_origin
+        client.headers["x-csrf-token"] = client.get("/api/auth/session").json()["csrf"]
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "Test-password-123"},
+        )
+        client.headers["x-csrf-token"] = response.json()["csrf"]
         result = client.post("/api/ingest").json()
         assert (
             result["documents"] == 1 and result["chunks"] == 1 and result["added"] == 1
         )
-        env.files.files.clear()
+        pdf.unlink()
         assert client.post("/api/ingest").status_code == 503
         assert client.post("/api/ingest?allow_empty=true").json()["deleted"] == 1
 

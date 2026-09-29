@@ -10,6 +10,10 @@ class Source(BaseModel):
     page: int
     excerpt: str
     score: float
+    revision: str | None = None
+    document_id: str | None = None
+    version: str | None = None
+    url: str | None = None
 
 
 class Answer(BaseModel):

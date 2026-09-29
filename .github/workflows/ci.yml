@@ -53,5 +53,53 @@ jobs:
         run: cp .env.example .env
       - name: Valider Docker Compose
         run: docker compose config --quiet
+      - name: Valider les configurations réseau interne et modèles
+        env:
+          APP_ORIGIN: https://instruct.example.internal
+          COOKIE_SECURE: "true"
+          LAN_BIND_IP: 192.168.1.20
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.lan.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.models.yml config --quiet
       - name: Construire les images applicatives
         run: docker compose build backend frontend
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r backend/requirements-dev.txt
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Démarrer une installation synthétique restaurée
+        run: |
+          (cd backend && PYTHONPATH=.:tests python tests/browser_demo.py) > /tmp/instruct-demo.log 2>&1 &
+          (cd frontend && npm run dev -- --host 127.0.0.1) > /tmp/instruct-vite.log 2>&1 &
+          python - <<'PY'
+          import time, urllib.request
+          for url in ('http://127.0.0.1:8000/healthz', 'http://localhost:3000'):
+              for attempt in range(60):
+                  try:
+                      urllib.request.urlopen(url, timeout=1).close()
+                      break
+                  except OSError:
+                      time.sleep(0.5)
+              else:
+                  raise RuntimeError('Serveur de test indisponible')
+          PY
+      - name: Parcours navigateur après restauration
+        working-directory: frontend
+        run: npm run test:browser
+      - name: Diagnostics si échec
+        if: failure()
+        run: cat /tmp/instruct-demo.log /tmp/instruct-vite.log

@@ -40,8 +40,8 @@ incompatibles, même lorsque leur dimension est identique.
   empreinte, nombre de passages). L'identifiant du manifeste dépend du chemin.
 
 Le manifeste est lu avec une pagination de 128 points, sans vecteurs. Il ne
-contient pas le texte des PDF. Il reste la seule source de vérité après un
-redémarrage; aucun état d'indexation n'est conservé uniquement en mémoire Python.
+contient pas le texte des PDF. Il reste la source de vérité des révisions Qdrant après un redémarrage; le
+catalogue SQLite doit aussi publier la même révision pour autoriser sa recherche.
 Il faut sauvegarder/restaurer les deux collections ensemble, backend arrêté.
 La perte du manifeste avec des passages présents bloque l'index plutôt que de
 considérer arbitrairement les anciennes données comme actuelles.
@@ -114,8 +114,9 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
-Une réponse dont les passages ont déjà été récupérés reste une photographie de
-ce moment, même si une synchronisation démarre pendant sa génération.
+Une révocation de droits ou une modification de la révision pendant la génération
+fait retirer la réponse complète. Les URL de sources contrôlent les droits à
+chaque ouverture, y compris pour les anciennes versions PDF.
 
 `portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
 partage `/state/locks` entre conteneurs du même projet, et refuse de créer
@@ -143,5 +144,8 @@ ancien index et ne change pas le modèle associé à la collection.
 - Une similarité vectorielle ne prouve ni l'exactitude ni l'actualité d'un document.
 - Le LLM peut encore interpréter incorrectement un passage.
 - Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
-- Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
+- Le frontend seul est publié sur loopback; authentification et ACL backend obligatoires.
+- SQLite ajoute comptes, sessions, groupes, catalogue et audit; voir [PME.md](PME.md).
+- Les recherches recoupent manifestes Qdrant et révisions autorisées du catalogue SQLite.
+- Les filtres sont revalidés avant le contexte et avant la réponse, sans cache partagé.
 - Les volumes Docker conservent localement modèles, manifeste et vecteurs.

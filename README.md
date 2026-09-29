@@ -12,6 +12,10 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 ## Fonctionnalités
 
 - fonctionnement local, sans API d'IA externe;
+- comptes locaux, trois rôles et accès documentaire par groupes;
+- sessions révocables, journal d’audit et sauvegarde/restauration vérifiée;
+- interface française de connexion, documents et administration;
+- configuration réseau interne HTTPS (voir [guide PME](docs/PME.md));
 - synchronisation incrémentale des PDF texte : ajout, modification et suppression;
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
@@ -44,29 +48,10 @@ La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITEC
 
 ## Installation rapide
 
-```bash
-git clone https://github.com/yvlar/instruct.git
-cd instruct
-cp .env.example .env
-docker compose up -d qdrant ollama
-docker compose exec ollama ollama pull qwen3:8b
-docker compose exec ollama ollama pull nomic-embed-text
-docker compose up -d --build
-```
-
-Pour activer explicitement le GPU NVIDIA :
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-```
-
-Vérification :
-
-```bash
-curl http://localhost:8000/healthz
-```
-
-Ouvrez ensuite <http://localhost:3000>. La documentation interactive de l'API est disponible sur <http://localhost:8000/docs>.
+Suivre le [guide d’installation PME](docs/PME.md) pour le premier administrateur,
+les modèles locaux, les droits et les sauvegardes. Aucun compte ni mot de passe
+n’est créé par défaut. L’interface locale est `http://localhost:3000`; l’API passe
+par la même origine. Les ports backend, Qdrant et Ollama ne sont plus publiés.
 
 ## Ajouter des documents
 
@@ -79,11 +64,11 @@ documents/maintenance/
 documents/formation/
 ```
 
-Les documents sont exclus de Git par défaut. Lancez ensuite l'indexation :
-
-```bash
-curl -X POST http://localhost:8000/api/ingest
-```
+Les documents sont exclus de Git par défaut. Connectez-vous comme administrateur,
+ouvrez **Documents → Synchroniser le dossier local**, puis attribuez explicitement
+les groupes de chaque PDF. Ils restent privés par défaut. L’interface permet aussi
+l’ajout, le remplacement, l’indexation individuelle et le retrait dans le périmètre
+accordé au gestionnaire.
 
 Chaque synchronisation compare le contenu SHA-256 et les paramètres d'indexation.
 Un PDF inchangé ne subit aucune extraction, aucun embedding ni aucun nouvel upsert.
@@ -108,8 +93,9 @@ interne de l'exception. Une réponse HTTP 200 peut être partielle : vérifiez
 `failed == 0` et `cleanup_pending == false`. Les erreurs globales (dossier absent,
 index incompatible, service indisponible, index occupé) retournent HTTP 503.
 
-Une nouvelle version ne devient visible qu'après l'écriture complète de ses
-passages. En cas d'échec, l'ancienne version reste stockée. Les passages incomplets
+Une nouvelle version ne devient recherchable qu’après publication complète de ses
+passages et mise à jour du catalogue. En cas d’échec, les versions PDF restent
+stockées; un PDF modifié non indexé est exclu des questions. Les passages incomplets
 ne sont jamais utilisés par `/api/ask`. Relancez simplement la même commande après
 une interruption. `cleanup_pending: true` signale un nettoyage physique à reprendre;
 les anciennes versions sont déjà exclues des réponses.
@@ -125,7 +111,7 @@ Pour supprimer **volontairement tous les PDF de l'index**, retirez d'abord les P
 du dossier, conservez le dossier présent et lisible, puis utilisez explicitement :
 
 ```bash
-curl -X POST 'http://localhost:8000/api/ingest?allow_empty=true'
+POST /api/ingest?allow_empty=true  # session administrateur + origine + CSRF requis
 ```
 
 Cette option autorise uniquement le cas vide; elle ne contourne ni une erreur de
@@ -159,21 +145,18 @@ mélanger des espaces vectoriels. Modifier `CHUNK_SIZE`, `CHUNK_OVERLAP` ou la v
 d'extraction entraîne une réindexation lors de la prochaine synchronisation.
 Modifier la taille des lots ou le modèle de conversation ne la déclenche pas.
 
-Exemple de question :
-
-```bash
-curl -X POST http://localhost:8000/api/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Quelle est la procédure de démarrage?"}'
-```
+Posez vos questions dans l’interface après connexion. Les sources ouvrent la
+version PDF citée à la bonne page, sous réserve des droits actuels.
 
 ## API
 
 | Méthode | Route | Description |
 |---|---|---|
 | `GET` | `/healthz` | Vérifie que l'API répond |
-| `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
-| `POST` | `/api/ask` | Retourne une réponse fondée sur les passages retrouvés |
+| `POST` | `/api/ingest` | Administrateur uniquement. Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
+| `POST` | `/api/ask` | Session requise; recherche limitée aux documents autorisés |
+
+Voir [le guide PME](docs/PME.md#api-et-développement) pour les autres routes et CSRF.
 
 ## Configuration
 
@@ -193,7 +176,7 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 
 ## Confidentialité et sécurité
 
-En configuration par défaut, les traitements restent sur la machine locale. Les ports sont liés à `127.0.0.1` et ne doivent pas être exposés directement sur Internet. L'application ne possède ni authentification ni gestion multiutilisateur.
+En configuration par défaut, les traitements restent sur la machine locale. Seule l’interface est liée à `127.0.0.1`. L’authentification et les droits sont obligatoires, y compris pour les appels directs à l’API. Le [guide PME](docs/PME.md) décrit HTTPS, les sessions, l’audit et les sauvegardes.
 
 Avant toute publication :
 
@@ -215,7 +198,7 @@ Avant toute publication :
   principalement à une page, plus un lot de vecteurs;
 - index et filtres de recherche gardent les métadonnées des documents en mémoire;
   cette approche vise un corpus local, pas des millions de documents;
-- aucun contrôle d'accès;
+- sources récupérées vérifiables, mais pas encore de validation structurée de chaque affirmation du modèle;
 - pas conçu ni certifié comme système de sécurité industrielle.
 
 ## Tests

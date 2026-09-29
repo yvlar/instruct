@@ -1,0 +1,5 @@
+# Temporary bootstrap only: allow the Ollama CLI to download model files.
+# Remove this override and recreate ollama immediately after the pulls.
+services:
+  ollama:
+    networks: [private, entry]

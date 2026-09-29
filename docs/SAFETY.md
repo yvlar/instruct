@@ -13,7 +13,8 @@ Instruct IA est un outil de recherche documentaire, pas un système de contrôle
 
 ## Déploiement
 
-Avant un usage réel, prévoyez au minimum :
+Les comptes, groupes, audit et sauvegardes sont décrits dans [PME.md](PME.md).
+Avant un usage réel, validez leur configuration et prévoyez au minimum :
 
 - authentification et autorisation par rôle;
 - versionnement et statut d'approbation des documents;

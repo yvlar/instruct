@@ -34,3 +34,8 @@ documents/**
 # Données locales
 qdrant_storage/
 ollama_data/
+
+state/
+backups/
+certs/
+*.tar.gz

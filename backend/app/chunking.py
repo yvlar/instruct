@@ -20,4 +20,3 @@ def chunk_text(text: str, size: int = 1400, overlap: int = 250) -> list[str]:
             break
         start = max(start + 1, end - overlap)
     return chunks
-
