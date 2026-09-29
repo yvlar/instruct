@@ -19,6 +19,7 @@ services:
       INDEX_LOCK_PATH: /state/locks
       DOCUMENT_STATE_PATH: /state/documents
       DOCUMENTS_PATH: /documents
+      LEXICAL_INDEX_PATH: /state/lexical
     ports: ["127.0.0.1:8000:8000"]
     volumes:
       - type: bind
@@ -29,6 +30,7 @@ services:
           create_host_path: false
       - index_locks:/state/locks
       - document_state:/state/documents
+      - lexical_data:/state/lexical
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777
@@ -46,3 +48,4 @@ volumes:
   ollama_data:
   index_locks:
   document_state:
+  lexical_data:

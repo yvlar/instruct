@@ -26,13 +26,11 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
       "Votre base documentaire est prête à accueillir ses premiers PDF",
     ),
   ).toBeVisible();
-  await page
-    .getByLabel("Fichier PDF")
-    .setInputFiles({
-      name: "fiche-demo.pdf",
-      mimeType: "application/pdf",
-      buffer: pdf,
-    });
+  await page.getByLabel("Fichier PDF").setInputFiles({
+    name: "fiche-demo.pdf",
+    mimeType: "application/pdf",
+    buffer: pdf,
+  });
   await page.getByLabel("Dossier relatif").fill("maintenance");
   await page
     .getByRole("button", { name: "Enregistrer le PDF", exact: true })
@@ -69,7 +67,11 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
     .fill("Quel réglage pour la machine DEMO-42?");
   await page.getByRole("button", { name: "Rechercher →", exact: true }).click();
   await expect(
-    page.getByText("La procédure fictive indique 12 unités", { exact: false }),
+    page
+      .locator(".claims")
+      .getByText("Regler la machine DEMO-42 a 12 unites. Procedure fictive.", {
+        exact: false,
+      }),
   ).toBeVisible();
   const versionResponse = page.waitForResponse(
     (r) => r.url().includes("/source?") && r.status() === 200,
@@ -91,7 +93,7 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
   expect(file.headers()["content-disposition"]).toContain("attachment");
   expect(await file.body()).toEqual(pdf);
   const actualDownload = page.waitForEvent("download");
-  await dialog.getByRole("link", {name:"Télécharger le PDF"}).click();
+  await dialog.getByRole("link", { name: "Télécharger le PDF" }).click();
   const downloaded = await actualDownload;
   expect(await downloaded.failure()).toBeNull();
   expect(readFileSync((await downloaded.path())!)).toEqual(pdf);

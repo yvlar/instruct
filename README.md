@@ -4,7 +4,7 @@
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
 
-Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de produire une réponse accompagnée du document, de la page et de l'extrait source.
+Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de sélectionner ceux qui répondent à la question. Le serveur affiche ces extraits avec leurs références vérifiées.
 
 > [!WARNING]
 > Ce projet aide à retrouver de l'information. Il ne remplace jamais une procédure officielle à jour, une formation, une analyse de risques, une consignation ou le jugement d'une personne qualifiée. Ne prenez aucune décision de sécurité uniquement à partir d'une réponse générée.
@@ -18,10 +18,10 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - synchronisation incrémentale des PDF texte : ajout, modification et suppression;
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
-- recherche vectorielle avec Qdrant;
+- recherche hybride locale : Qdrant sémantique et SQLite FTS5 pour les termes exacts;
 - génération avec Qwen via Ollama;
-- réponses avec document, page, extrait et score de pertinence;
-- refus explicite lorsque les documents ne contiennent pas la réponse;
+- réponses extractives avec citations par élément, document, page et passage vérifiés;
+- refus prudent si les passages sont jugés insuffisants, ambigus ou si les citations sont invalides;
 - API FastAPI et interface React/TypeScript;
 - déploiement conteneurisé avec Docker Compose.
 
@@ -36,6 +36,11 @@ Question -> embedding -> recherche sémantique ------+
 ```
 
 La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Les [tests de régression RAG et l'évaluation locale facultative](docs/RAG_REGRESSION.md)
+couvrent les citations, refus, valeurs exactes, PDF invalides et synchronisations.
+`grounded: true` atteste la provenance des extraits affichés, pas leur pertinence
+ni l'exactitude métier du document.
 
 ## Prérequis
 
@@ -163,14 +168,14 @@ pour vider un index dont le dossier source est vide.
 ### Migrer un index existant ou changer de modèle d'embeddings
 
 Les anciens points ne contiennent que le nom du fichier; il est impossible de
-retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste v2
+retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste compatible
 produit `LEGACY_INDEX`; il n'est ni supprimé ni interrogé par la nouvelle version.
 La reconstruction dans une **nouvelle collection** est obligatoire :
 
 1. Conservez une sauvegarde des PDF et de Qdrant; arrêtez le backend avec
    `docker compose stop backend`.
 2. Dans `.env`, remplacez `QDRANT_COLLECTION=work_instructions` par un nom encore
-   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_v2`.
+   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_hybrid_v3`.
 3. Exécutez `docker compose up -d --build backend` puis l'appel `/api/ingest`.
 4. Vérifiez `failed: 0`, `cleanup_pending: false`, puis une question avec ses sources.
    Relancez l'ingestion et vérifiez `unchanged` et `chunks: 0`.
@@ -200,7 +205,7 @@ curl -X POST http://localhost:8000/api/ask \
 |---|---|---|
 | `GET` | `/healthz` | Vérifie que l'API répond |
 | `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
-| `POST` | `/api/ask` | Réponse et sources avec identifiant, version et page |
+| `POST` | `/api/ask` | Extraits vérifiés, claims et sources avec identifiant, version et page |
 | `GET` | `/api/documents` | Liste : `q`, `status`, `page`, `page_size`, tâches récentes |
 | `PUT` | `/api/documents` | Corps PDF brut, `Content-Type: application/pdf`; `name`, `folder`, `replace_id` explicite |
 | `POST` | `/api/documents/sync` | Lance une synchronisation; réponse 202 avec la tâche |
@@ -217,6 +222,7 @@ curl -X POST http://localhost:8000/api/ask \
 | `./documents` → `/documents` | PDF courants, montage désormais en lecture-écriture | Dossier de l’hôte |
 | `document_state` → `/state/documents` | Registre SQLite, tâches, remplacements préparés, versions PDF et archives | Volume Docker nommé |
 | `index_locks` → `/state/locks` | Verrous de mutation de l’index | Volume Docker nommé |
+| `lexical_data` → `/state/lexical` | Index SQLite FTS5, reconstructible depuis Qdrant | Volume Docker nommé |
 | `qdrant_data` | Passages et manifestes Qdrant | Volume Docker nommé |
 | `ollama_data` | Modèles locaux | Volume Docker nommé |
 
@@ -249,6 +255,31 @@ indisponibilité. Les anciennes réponses sans version doivent être régénér�
 synchronisation. Aucun cache de réponses n’est introduit : réponses HTTP `no-store`,
 sources revérifiées après génération, et réponse affichée effacée après une mutation UI.
 
+`answer` reste une chaîne utilisable par les clients existants. `claims` relie
+chaque extrait à ses `source_ids`; `sources` contient uniquement les passages
+utilisés et leur `source_id`. `safety_notice` fournit le rappel officiel, même
+en cas de refus. L'interface affiche les liens de citation par élément.
+
+**`grounded` valide la provenance des extraits, pas leur vérité ni leur pertinence
+sémantique.** Un passage authentique peut être incomplet ou mal interprété.
+Consultez [le contrat, les limites et le banc de régression](docs/GROUNDING.md).
+
+## Recherche hybride et migration
+
+La recherche combine les embeddings Qdrant et SQLite FTS5 pour retrouver aussi
+les codes exacts, nombres et unités. Les passages conservent les titres, étapes
+et pages; le contexte est borné. Les références et extraits cités sont validés
+avant de retourner les sources utilisées. `grounded` indique une provenance
+validée, pas une garantie d'exactitude. Le score de recherche n'est pas une
+probabilité.
+
+**Le schéma 3 exige de reconstruire les index v2 dans une nouvelle collection.**
+Les anciens index sont conservés et refusés explicitement jusqu'à cette migration.
+Les modalités de synchronisation et de suppression volontaire restent identiques.
+
+Voir [recherche hybride](docs/HYBRID_RETRIEVAL.md) pour les réglages, la migration,
+les limites, le benchmark reproductible et les mesures réellement obtenues.
+
 ## Configuration
 
 Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
@@ -264,8 +295,17 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `INDEX_LOCK_PATH` | `/tmp/instruct-locks` | Verrous locaux; Compose impose le volume partagé `/state/locks` |
 | `DOCUMENT_STATE_PATH` | `.instruct-state` | Registre et versions hors du dossier documentaire; Compose impose `/state/documents` |
 | `MAX_PDF_BYTES` | `52428800` | Limite serveur par PDF, vérifiée aussi en réception progressive |
-| `MIN_SCORE` | `0.35` | Seuil minimal de pertinence |
-| `TOP_K` | `6` | Nombre maximal de passages récupérés |
+| `MIN_SCORE` | `0.35` | Seuil de similarité vectorielle, sans valeur de probabilité de vérité |
+| `TOP_K` | `4` | Nombre maximal de passages retenus |
+| `RETRIEVAL_CANDIDATES` | `24` | Candidats par méthode avant fusion |
+| `CONTEXT_MAX_CHARS` | `8000` | Budget de présélection sérialisée, avant les limites de génération |
+| `LEXICAL_INDEX_PATH` | `./data/lexical` | Index SQLite local; Compose utilise `/state/lexical` |
+| `MAX_CONTEXT_CHARS` | `3200` | Plafond du texte fourni au modèle; budget UTF-8 conservateur supplémentaire |
+| `MAX_PASSAGE_CHARS` | `1400` | Passage entier maximum; les passages trop longs sont omis |
+| `MAX_ANSWER_CHARS` | `1600` | Longueur cumulée maximale des extraits sélectionnés |
+| `MAX_RESPONSE_CHARS` | `6000` | Taille maximale du JSON accepté |
+| `OLLAMA_NUM_CTX` | `4096` | Fenêtre de contexte en tokens |
+| `OLLAMA_NUM_PREDICT` | `768` | Tokens de sortie maximum, JSON compris |
 
 ## Confidentialité et sécurité
 
@@ -283,7 +323,7 @@ Avant toute publication :
 - PDF texte seulement; les documents numérisés nécessitent un OCR;
 - indexation déclenchée depuis l’interface ou l’API, sans surveillance automatique du dossier;
 - aucune purge automatique des snapshots, archives ou tâches : surveillez l’espace disque;
-- les sources indiquent les passages retrouvés; la validation du contenu généré par citations structurées n’est pas encore présente sur la branche de base;
+- les citations valident la provenance des extraits, sans garantir leur pertinence pour la situation réelle;
 - lecture du contenu des PDF pour calculer les empreintes, même sans changement;
 - une synchronisation à la fois; `/api/ask` renvoie `INDEX_BUSY` pendant celle-ci;
 - déploiement Docker Linux sur un seul hôte et un seul processus backend; les opérations de fichiers utilisent `openat`/`O_NOFOLLOW`; pour Windows et macOS, utilisez Docker;

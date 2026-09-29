@@ -28,3 +28,17 @@ Avant un usage réel, prévoyez au minimum :
 
 Les documents chargés restent sous la responsabilité de l'utilisateur. Ne publiez pas de contenu confidentiel, de donnée personnelle, de secret commercial ou de document dont vous ne détenez pas les droits.
 
+
+## Citations et contenu non fiable
+
+`grounded: true` indique une sélection d'extraits dont les références et le texte
+ont été validés, pas une certification de vérité, de pertinence ou de sécurité.
+Lire les conditions du passage complet et vérifier le document officiel reste
+obligatoire. Un score vectoriel n'est jamais une probabilité de vérité.
+
+Le texte des PDF et la question sont des données non fiables. Ils ne peuvent
+fournir des règles système, des noms de sources générés ou des outils exécutables.
+L'application n'exécute aucune action issue d'un PDF ou d'une réponse. Le filtre
+d'injections évidentes est une protection supplémentaire imparfaite; des attaques
+obfusquées et des faux positifs restent possibles. Voir [GROUNDING.md](GROUNDING.md)
+pour le contrat exact, les refus, les limites et les tests reproductibles.

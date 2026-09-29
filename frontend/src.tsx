@@ -5,7 +5,13 @@ import { Source, SourcePreview } from "./SourcePreview";
 import { message, request } from "./api";
 import "./styles.css";
 
-type Result = { answer: string; sources: Source[]; grounded: boolean };
+type Result = {
+  answer: string;
+  sources: Source[];
+  grounded: boolean;
+  claims: { text: string; source_ids: string[] }[];
+  safety_notice: string;
+};
 function App() {
   const answerEpoch = useRef(0);
   const [screen, setScreen] = useState("questions");
@@ -105,49 +111,101 @@ function App() {
               {error}
             </p>
           )}
-          {result && (
-            <section className="result">
-              <span
-                className={
-                  result.grounded ? "badge available" : "badge pending"
-                }
-              >
-                {result.grounded ? "Passages retrouvés" : "Information absente"}
-              </span>
-              <h3>Réponse</h3>
-              <p className="answer">{result.answer}</p>
-              {!!result.sources.length && (
-                <>
-                  <h3>Sources</h3>
-                  <div className="sources">
-                    {result.sources.map((s, i) => (
-                      <article key={i}>
-                        <div>
-                          <strong>{s.document}</strong>
-                          <span>
-                            Page {s.page} · pertinence{" "}
-                            {Math.round(s.score * 100)} %
-                          </span>
-                          <p>{s.excerpt}</p>
-                        </div>
-                        <button
-                          className="secondary"
-                          onClick={() => setSource(s)}
+          <div aria-live="polite" aria-busy={busy}>
+            {result && (
+              <section className="result">
+                <span
+                  className={
+                    result.grounded ? "badge available" : "badge pending"
+                  }
+                >
+                  {result.grounded
+                    ? "Extraits vérifiés"
+                    : "Information absente"}
+                </span>
+                <h3>Réponse</h3>
+                {result.grounded && result.claims.length > 0 ? (
+                  <>
+                    <p className="citation-notice">
+                      Chaque extrait est relié à son passage source. Vérifiez
+                      qu’il répond à votre situation et lisez les conditions qui
+                      l’entourent.
+                    </p>
+                    <ul className="claims">
+                      {result.claims.map((claim, index) => (
+                        <li key={index}>
+                          <span className="answer">{claim.text}</span>{" "}
+                          {claim.source_ids.map((id) => {
+                            const sourceIndex = result.sources.findIndex(
+                              (s) => s.source_id === id,
+                            );
+                            const cited = result.sources[sourceIndex];
+                            return (
+                              cited && (
+                                <a
+                                  className="citation"
+                                  key={id}
+                                  href={`#source-${id}`}
+                                  aria-label={`Source ${sourceIndex + 1} : ${cited.document}, page ${cited.page}`}
+                                >
+                                  [{sourceIndex + 1}]
+                                </a>
+                              )
+                            );
+                          })}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p className="answer">{result.answer}</p>
+                )}
+                {!!result.sources.length && (
+                  <>
+                    <h3>Passages utilisés</h3>
+                    <div className="sources">
+                      {result.sources.map((s, i) => (
+                        <article
+                          key={s.source_id ?? i}
+                          id={`source-${s.source_id}`}
+                          tabIndex={-1}
                         >
-                          Ouvrir la source · p. {s.page}
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                </>
-              )}
-            </section>
-          )}
+                          <div>
+                            <strong>{s.document}</strong>
+                            <span>Page {s.page}</span>
+                            <blockquote>{s.excerpt}</blockquote>
+                            <details>
+                              <summary>
+                                Score de classement hybride :{" "}
+                                {s.score.toFixed(3)}
+                              </summary>
+                              <p>
+                                Ce score combine les classements des recherches
+                                sémantique et lexicale. Ce n’est ni une
+                                probabilité de vérité, ni une validation de la
+                                réponse.
+                              </p>
+                            </details>
+                          </div>
+                          <button
+                            className="secondary"
+                            onClick={() => setSource(s)}
+                          >
+                            Ouvrir la source · p. {s.page}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </section>
+            )}
+          </div>
         </>
       )}
       <footer>
-        Vérifiez toujours la version officielle de l’instruction avant
-        d’exécuter une procédure.
+        {result?.safety_notice ??
+          "Vérifiez toujours la version officielle de l’instruction avant d’exécuter une procédure. Cet assistant de recherche documentaire n’est pas une autorité en matière de sécurité industrielle."}
       </footer>
       {source && (
         <SourcePreview source={source} onClose={() => setSource(null)} />

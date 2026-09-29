@@ -39,3 +39,8 @@ ollama_data/
 .instruct-state/
 frontend/test-results/
 frontend/playwright-report/
+# Local lexical index and benchmark outputs
+data/
+benchmark-results/
+*.sqlite3
+evaluation-results/

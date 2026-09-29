@@ -35,6 +35,7 @@ def api(tmp_path, monkeypatch):
         documents_path=str(root),
         document_state_path=str(tmp_path / "state"),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
         max_pdf_bytes=1024 * 1024,
     )
     qdrant = FaultyQdrant()
@@ -454,3 +455,55 @@ def test_interrupted_http_upload_never_replaces_previous_document(api):
     assert (api.root / "maintenance/fiche.pdf").read_bytes() == original
     assert not list((api.manager.state.root / "staging").iterdir())
     assert api.manager.state.records()["maintenance/fiche.pdf"]["pending"] is None
+
+
+def test_retirement_cleans_lexical_index_and_retries_partial_failure(api, monkeypatch):
+    from app.lexical import LexicalIndex
+
+    identifier = add_indexed(api)
+    with api.kb.lexical.connect() as db:
+        assert db.execute("SELECT count(*) FROM passages").fetchone()[0] > 0
+    original = LexicalIndex.collect_garbage
+
+    def fail_cleanup(self, manifests):
+        raise OSError("private lexical failure")
+
+    monkeypatch.setattr(LexicalIndex, "collect_garbage", fail_cleanup)
+    job = wait_job(api, api.client.post(f"/api/documents/{identifier}/remove"))
+    assert job["state"] == "failed"
+    assert api.manager.state.records()["maintenance/fiche.pdf"]["removed"] == 1
+    answer = api.client.post("/api/ask", json={"question": "DEMO-42 12 unites?"}).json()
+    assert not answer["grounded"] and answer["sources"] == [] and answer["claims"] == []
+    monkeypatch.setattr(LexicalIndex, "collect_garbage", original)
+    retried = wait_job(api, api.client.post(f"/api/document-jobs/{job['id']}/retry"))
+    assert retried["state"] == "completed"
+    with api.kb.lexical.connect() as db:
+        assert db.execute("SELECT count(*) FROM passages").fetchone()[0] == 0
+
+
+def test_verified_claims_keep_exact_document_version(api):
+    identifier = add_indexed(api)
+    answer = api.client.post("/api/ask", json={"question": "DEMO-42 12 unites?"}).json()
+    assert answer["grounded"] and answer["claims"] and answer["safety_notice"]
+    cited = {
+        source_id for claim in answer["claims"] for source_id in claim["source_ids"]
+    }
+    assert cited == {source["source_id"] for source in answer["sources"]}
+    for source in answer["sources"]:
+        assert source["document_id"] == identifier
+        assert source["revision"] and source["fingerprint"] and source["passage_id"]
+        response = api.client.get(
+            f"/api/documents/{identifier}/file",
+            params={"version": source["version"], "page": source["page"]},
+        )
+        assert response.status_code == 200
+        assert hashlib.sha256(response.content).hexdigest() == source["version"]
+
+
+def test_retirement_repairs_missing_lexical_sidecar(api):
+    identifier = add_indexed(api)
+    api.kb.lexical.path.unlink()
+    job = wait_job(api, api.client.post(f"/api/documents/{identifier}/remove"))
+    assert job["state"] == "completed"
+    with api.kb.lexical.connect() as db:
+        assert db.execute("SELECT count(*) FROM passages").fetchone()[0] == 0

@@ -21,6 +21,7 @@ config = Settings(
     documents_path=str(root / "documents"),
     document_state_path=str(root / "state"),
     index_lock_path=str(root / "locks"),
+    lexical_index_path=str(root / "lexical"),
 )
 qdrant = FaultyQdrant()
 qdrant.close = lambda: None
@@ -31,14 +32,6 @@ def controlled_ollama(request):
     if request.url.path == "/api/chat":
         body = json.loads(request.content)
         assert "DEMO-42" in body["messages"][-1]["content"]
-        return httpx.Response(
-            200,
-            json={
-                "message": {
-                    "content": "La procédure fictive indique 12 unités pour la machine DEMO-42 [maintenance/fiche-demo.pdf, p. 2]. Vérifiez la version officielle avant toute opération."
-                }
-            },
-        )
     return ollama(request)
 
 

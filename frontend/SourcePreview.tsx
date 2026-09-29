@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { API, message, request } from "./api";
 
 export type Source = {
+  source_id?: string;
+  passage_id?: string;
+  revision?: string;
+  fingerprint?: string;
   document: string;
   page: number;
   excerpt: string;

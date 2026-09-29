@@ -13,7 +13,6 @@ from pathlib import Path
 
 import fitz
 
-from .chunking import chunk_text
 from .indexing import DocumentError, PdfSource, document_id
 
 
@@ -310,8 +309,11 @@ class ManagedPdfSource(PdfSource):
             pending["file_hash"],
         ):
             raise DocumentError("SOURCE_CHANGED")
-        with self.stream(document) as stream:
-            return hashlib.file_digest(stream, "sha256").hexdigest()
+        try:
+            with self.stream(document) as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest()
+        except DocumentProblem as exc:
+            raise DocumentError("READ_FAILED") from exc
 
     def snapshot(self, document, expected_hash):
         with self.stream(document) as stream:
@@ -320,7 +322,7 @@ class ManagedPdfSource(PdfSource):
     def passages(self, document, expected_hash):
         with fitz.open(self.snapshot(document, expected_hash)) as pdf:
             for number, page in enumerate(pdf, 1):
-                for text in chunk_text(page.get_text(), self.size, self.overlap):
+                for text in self.page_passages(page):
                     yield number, text
 
     def metadata(self, document, expected_hash):

@@ -6,8 +6,17 @@ import fitz
 import httpx
 from qdrant_client import QdrantClient, models
 
+from .answering import VERSION_WARNING
 from .config import settings
 from .document_storage import ManagedPdfSource
+from .grounding import (
+    SYSTEM_PROMPT,
+    GeneratedAnswer,
+    model_message,
+    prepare_passages,
+    refusal,
+    verified_answer,
+)
 from .indexing import (
     PIPELINE_VERSION,
     SCHEMA_VERSION,
@@ -20,15 +29,8 @@ from .indexing import (
     index_lock,
     require_completed,
 )
-
-SYSTEM_PROMPT = """Tu es un assistant d'instructions de travail industrielles.
-Réponds uniquement avec le CONTEXTE fourni. N'invente jamais une étape, une valeur,
-une consigne de sécurité ou un équipement. Si le contexte est insuffisant, réponds
-exactement : « Information non trouvée dans les instructions disponibles. »
-Cite les sources dans le texte sous la forme [document, p. X]. Réponds en français,
-clairement et sans ajouter de connaissance générale. Rappelle de vérifier la version
-officielle du document avant d'exécuter une procédure.
-"""
+from .lexical import LexicalIndex
+from .retrieval import Passage, fuse, select_context
 
 
 class KnowledgeBase:
@@ -49,6 +51,10 @@ class KnowledgeBase:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=120)
         return self._http
+
+    @property
+    def lexical(self):
+        return LexicalIndex(self.settings)
 
     @property
     def store(self):
@@ -140,6 +146,10 @@ class KnowledgeBase:
             )
         except Exception as exc:
             raise DocumentError("QDRANT_WRITE_FAILED") from exc
+        try:
+            self.lexical.upsert(points)
+        except Exception as exc:
+            raise DocumentError("LEXICAL_WRITE_FAILED") from exc
 
     async def stage_document(self, document, file_hash, fingerprint, revision, size):
         batch = []
@@ -191,6 +201,7 @@ class KnowledgeBase:
                     "EMPTY_DOCUMENTS: index conservé. Pour une suppression totale volontaire, "
                     "utilisez POST /api/ingest?allow_empty=true."
                 )
+            self.lexical.repair(self.qdrant, self.settings.qdrant_collection, manifests)
             result = dict(
                 documents=len(inventory),
                 chunks=0,
@@ -321,88 +332,118 @@ class KnowledgeBase:
                 _, committed = self.store.read()
                 try:
                     self.store.collect_garbage(committed)
+                    self.lexical.collect_garbage(committed)
                 except Exception:
                     result["cleanup_pending"] = True
             return result
 
-    async def ask(self, question: str) -> dict:
+    async def retrieve(self, question: str, *, semantic_only=False) -> list[Passage]:
         with index_lock(self.settings, shared=True):
             control, manifests = self.store.read()
             excluded = (
                 self.source.excluded() if hasattr(self.source, "excluded") else set()
             )
             manifests = {
-                path: m for path, m in manifests.items() if path not in excluded
+                path: manifest
+                for path, manifest in manifests.items()
+                if path not in excluded
             }
-            hits = []
-            if manifests:
-                self.check_identity(control, await self.embedding_identity())
-                hits = self.qdrant.query_points(
-                    self.settings.qdrant_collection,
-                    query=await self.embed(question),
-                    query_filter=active_filter(manifests),
-                    limit=self.settings.top_k,
-                    score_threshold=self.settings.min_score,
-                    with_payload=True,
-                ).points
-        if not hits:
-            return {
-                "answer": "Information non trouvée dans les instructions disponibles.",
-                "sources": [],
-                "grounded": False,
-            }
-        context = "\n\n".join(
-            f"SOURCE {i}: [{h.payload['document']}, p. {h.payload['page']}]\n{h.payload['text']}"
-            for i, h in enumerate(hits, start=1)
+            if not manifests:
+                return []
+            self.check_identity(control, await self.embedding_identity())
+            self.lexical.require_ready(manifests)
+            hits = self.qdrant.query_points(
+                self.settings.qdrant_collection,
+                query=await self.embed(question),
+                query_filter=active_filter(manifests),
+                limit=self.settings.top_k
+                if semantic_only
+                else self.settings.retrieval_candidates,
+                score_threshold=self.settings.min_score,
+                with_payload=True,
+            ).points
+            semantic = [
+                Passage.from_point(hit)
+                for hit in sorted(
+                    hits, key=lambda h: (-getattr(h, "score", 0), str(h.id))
+                )
+            ]
+            if semantic_only:
+                return semantic
+            rows = self.lexical.search(
+                question, manifests, self.settings.retrieval_candidates
+            )
+            lexical = [
+                Passage(
+                    row["id"],
+                    row["document"],
+                    row["revision"],
+                    row["fingerprint"],
+                    row["page"],
+                    row["text"],
+                )
+                for row in rows
+            ]
+            return fuse(question, semantic, lexical)
+
+    async def ask(self, question: str) -> dict:
+        candidates = select_context(
+            await self.retrieve(question),
+            max_passages=self.settings.top_k,
+            max_chars=self.settings.context_max_chars,
         )
+        passages = prepare_passages(candidates, question, self.settings)
+        if not passages:
+            return refusal()
+        output_schema = GeneratedAnswer.model_json_schema()
+        output_schema["$defs"]["Selection"]["properties"]["source_id"]["enum"] = [
+            passage.source_id for passage in passages
+        ]
         response = await self.http.post(
             f"{self.settings.ollama_url}/api/chat",
             json={
                 "model": self.settings.ollama_model,
                 "stream": False,
+                "think": False,
+                "format": output_schema,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"CONTEXTE:\n{context}\n\nQUESTION:\n{question}",
-                    },
+                    {"role": "user", "content": model_message(question, passages)},
                 ],
-                "options": {"temperature": 0.1},
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": self.settings.ollama_num_ctx,
+                    "num_predict": self.settings.ollama_num_predict,
+                },
             },
         )
         response.raise_for_status()
-        # No cached or in-flight answer may retain a source retired/replaced during generation.
+        try:
+            envelope = response.json()
+        except ValueError:
+            return refusal()
+        result = verified_answer(envelope, passages, self.settings)
+        if not result["grounded"]:
+            return result
+        if len({p.document for p in passages}) > 1:
+            result["safety_notice"] += " " + VERSION_WARNING
+        # A cited revision may have been removed/replaced during local generation.
         with index_lock(self.settings, shared=True):
             _, current = self.store.read()
             excluded = (
                 self.source.excluded() if hasattr(self.source, "excluded") else set()
             )
             if any(
-                h.payload["document"] in excluded
-                or current.get(h.payload["document"], {}).get("revision")
-                != h.payload["revision"]
-                for h in hits
+                source["document"] in excluded
+                or current.get(source["document"], {}).get("revision")
+                != source["revision"]
+                for source in result["sources"]
             ):
-                return {
-                    "answer": "Les documents ont changé pendant la recherche. Veuillez relancer la question.",
-                    "sources": [],
-                    "grounded": False,
-                }
-        return {
-            "answer": response.json()["message"]["content"],
-            "grounded": True,
-            "sources": [
-                {
-                    "document": h.payload["document"],
-                    "document_id": document_id(h.payload["document"]),
-                    "version": manifests[h.payload["document"]].get("file_hash"),
-                    "page": h.payload["page"],
-                    "excerpt": h.payload["text"][:300],
-                    "score": round(h.score, 3),
-                }
-                for h in hits
-            ],
-        }
+                return refusal()
+            for source in result["sources"]:
+                source["document_id"] = document_id(source["document"])
+                source["version"] = current[source["document"]].get("file_hash")
+        return result
 
 
 knowledge_base = KnowledgeBase()

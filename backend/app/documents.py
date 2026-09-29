@@ -245,6 +245,8 @@ class DocumentManager:
         if control:
             _, manifests = kb.store.read()
             kb.store.collect_garbage(manifests)
+            kb.lexical.repair(kb.qdrant, kb.settings.qdrant_collection, manifests)
+            kb.lexical.collect_garbage(manifests)
         if record.get("pending"):
             (self.state.root / "staging" / record["pending"]["name"]).unlink(
                 missing_ok=True
