@@ -18,6 +18,7 @@ root = Path(sandbox.name)
 (root / "documents").mkdir()
 config = Settings(
     _env_file=None,
+    app_origin="http://127.0.0.1:3000",
     state_path=str(root / "security"),
     documents_path=str(root / "documents"),
     document_state_path=str(root / "state"),
