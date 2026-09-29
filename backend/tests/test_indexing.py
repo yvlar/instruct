@@ -65,8 +65,16 @@ class FakeOllama:
         body = json.loads(request.content)
         if request.url.path == "/api/chat":
             self.chat_requests.append(body)
+            context = json.loads(body["messages"][1]["content"])
             return httpx.Response(
-                200, json={"message": {"content": "Réponse sourcée."}}
+                200,
+                json={
+                    "message": {
+                        "content": json.dumps(
+                            {"passage_ids": [p["id"] for p in context["passages"]]}
+                        )
+                    }
+                },
             )
         assert request.url.path == "/api/embed"
         assert isinstance(body["input"], list)

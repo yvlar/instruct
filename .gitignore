@@ -34,3 +34,4 @@ documents/**
 # Données locales
 qdrant_storage/
 ollama_data/
+evaluation-results/
