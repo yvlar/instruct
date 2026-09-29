@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 const browser = await chromium.launch();
 const context = await browser.newContext();
+context.setDefaultTimeout(20000);
+context.setDefaultNavigationTimeout(20000);
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
@@ -36,6 +38,7 @@ try {
   assert(!(await page.locator('body').innerText()).includes('production/vanne.pdf'));
   // UUID is supplied by the admin session in a separate browser context.
   const admin = await browser.newContext();
+  admin.setDefaultTimeout(20000);
   const adminPage = await admin.newPage();
   await adminPage.goto('http://localhost:3000');
   await adminPage.getByLabel('Identifiant', {exact:true}).fill('admin');

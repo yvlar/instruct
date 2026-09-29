@@ -95,6 +95,7 @@ async def evaluate(args):
             )
             config = Settings(
                 _env_file=None,
+                state_path=str(root / "state"),
                 documents_path=str(root / "pdf"),
                 index_lock_path=str(root / "locks"),
                 lexical_index_path=str(root / "lexical"),
