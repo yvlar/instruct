@@ -609,3 +609,21 @@ def test_restore_rejects_traversal_and_incompatible_schema_before_mutation(secur
     with pytest.raises(ValueError, match="incompatible"):
         restore(e.config, e.kb, incompatible, overwrite=True)
     assert e.login("alice").get(f"/api/documents/{e.a}/file").status_code == 200
+
+
+def test_failed_archive_write_never_logs_backup_success(secured, monkeypatch):
+    e = secured
+
+    def unavailable(*args, **kwargs):
+        raise OSError("Synthetic full disk")
+
+    monkeypatch.setattr("app.backup.tarfile.open", unavailable)
+    archive = e.tmp / "unwritten.tar.gz"
+    with pytest.raises(OSError):
+        backup(e.config, e.kb, archive)
+    assert not archive.exists()
+    with e.store.connect() as db:
+        assert [
+            r[0]
+            for r in db.execute("SELECT result FROM audit WHERE action='backup.finish'")
+        ] == ["failure"]

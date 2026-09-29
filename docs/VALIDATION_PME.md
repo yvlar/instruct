@@ -6,7 +6,7 @@ documentaire déjà fusionnés. Aucun document réel ni compte de production uti
 
 ## Exécuté dans l’environnement de développement
 
-- `cd backend && ../.venv/bin/python -m pytest -q --tb=short` : **53 réussis,
+- `cd backend && ../.venv/bin/python -m pytest -q --tb=short` : **54 réussis,
   1 ignoré**. Le test ignoré demande des services HTTP Qdrant/Ollama réels;
   aucune variable `INSTRUCT_TEST_*` n’était fournie.
 - `ruff check --isolated --select E4,E7,E9,F backend` : réussi.

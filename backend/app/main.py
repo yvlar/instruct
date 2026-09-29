@@ -384,11 +384,18 @@ def create_app(config=None, *, kb=None):
 
     @app.post("/api/documents/{ident}/sync", response_model=IngestionResult)
     async def sync(ident: str, request: Request, user=Depends(current)):
-        result = await documents.synchronize(
-            user, ident, resolve_user=lambda: current(request)
-        )
-        security.require_document(ident, current(request), manage=True)
-        return result
+        try:
+            result = await documents.synchronize(
+                user, ident, resolve_user=lambda: current(request)
+            )
+            security.require_document(ident, current(request), manage=True)
+            return result
+        except (HTTPException, IndexErrorBase):
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                503, "Indexation impossible; vérifiez les services locaux."
+            ) from exc
 
     @app.post("/api/ingest", response_model=IngestionResult)
     async def ingest(request: Request, allow_empty: bool = False, user=Depends(admin)):

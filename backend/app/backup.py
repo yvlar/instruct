@@ -124,7 +124,7 @@ def backup(config, kb, archive):
                 copy_tree(config.documents_path, root / "documents")
                 copy_tree(security.root / "versions", root / "versions")
                 collections = export_index(kb, root)
-                security.audit(None, "backup.finish", "archive")
+                security.audit(None, "backup.snapshot", "archive", "prepared")
                 with (
                     security.connect() as source,
                     sqlite3.connect(root / "security.sqlite3") as dest,
@@ -176,6 +176,7 @@ def backup(config, kb, archive):
                 except BaseException:
                     archive.unlink(missing_ok=True)
                     raise
+                security.audit(None, "backup.finish", "archive")
         except BaseException:
             security.audit(None, "backup.finish", "archive", "failure")
             raise
