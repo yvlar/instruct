@@ -335,7 +335,7 @@ function App() {
               )}
             </>
           )}
-          {tab === "library" && user.role === "admin" && <div className="library"><LibraryDocuments onChange={() => setRevision(r => r + 1)} /></div>}
+          {tab === "library" && user.role === "admin" && <div className="library"><LibraryDocuments onChange={() => { setRevision(r => r + 1); setResult(null); setPreview(null); }} /></div>}
           {tab === "documents" && (
             <Documents
               key={`${user.id}-${revision}`}
