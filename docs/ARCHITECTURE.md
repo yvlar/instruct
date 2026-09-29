@@ -105,21 +105,29 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 
 ## Question-réponse et concurrence
 
-La recherche interroge les révisions actives dans Qdrant et SQLite, puis fusionne
-les candidats par priorité exacte et RRF. Les UUID, versions et pages restent
-attachés aux passages. Le contexte garde au maximum quatre passages entiers sous
-un budget configurable. Qwen retourne uniquement des `passage_ids`; le serveur
-valide tous les identifiants contre les seuls passages envoyés, puis restitue
-leurs extraits complets avec citations. Aucun texte libre du modèle n'est accepté.
-Les documents différents restent séparés avec l'avertissement de version existant.
-Après génération, les révisions sont revérifiées sous verrou : une révision
-retirée ou remplacée provoque un refus. Le rang n'est jamais une preuve de vérité.
+1. Prendre le verrou partagé, lire les manifestes et vérifier l'identité du modèle.
+2. Transformer la question en vecteur; rechercher les révisions actives dans
+   Qdrant et SQLite FTS5 avant la limite de candidats. Fusionner les résultats
+   par priorité aux termes exacts et rang RRF, puis appliquer `TOP_K` et les budgets.
+3. Relâcher le verrou après récupération des passages. Sans résultat actif, ne pas
+   appeler le modèle de conversation et répondre « information non trouvée ».
+4. Préparer des passages entiers bornés, chacun avec un identifiant stable.
+   Refuser les injections évidentes; séparer le prompt fixe des données non fiables.
+5. Faire une unique génération JSON extractive, sans réflexion étendue, avec
+   limites explicites de contexte et de sortie.
+6. Vérifier la complétude JSON, le statut de suffisance, chaque identifiant et
+   chaque extrait exact. Refuser l'ensemble si un contrôle échoue.
+7. Recontrôler les révisions sélectionnées sous verrou après génération.
+8. Retourner les éléments cités, uniquement leurs sources avec chemin relatif,
+   page et passage, et le rappel officiel fixé côté serveur.
 
-Le [guide hybride](HYBRID_RETRIEVAL.md) décrit l'algorithme, le schéma 3, les limites
-et les mesures. Lors de l'ingestion décrite ci-dessus, chaque lot Qdrant est aussi
-écrit dans SQLite **avant** publication du manifeste. Le nettoyage concerne les
-deux index. La perte de SQLite se répare depuis Qdrant sans nouvel embedding.
-Un ancien manifeste v2 impose une nouvelle collection; aucune migration silencieuse.
+Le [guide hybride](HYBRID_RETRIEVAL.md) décrit SQLite, RRF et le schéma 3.
+Chaque lot est écrit dans les deux index avant publication du manifeste;
+SQLite se répare depuis Qdrant sans nouvel embedding. Un manifeste v2 impose
+une nouvelle collection, sans migration silencieuse.
+
+Le contrat et ses limites sémantiques sont décrits dans [GROUNDING.md](GROUNDING.md).
+`grounding.py` ne démontre pas la vérité d'une réponse; il vérifie sa provenance.
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.

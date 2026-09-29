@@ -1,13 +1,11 @@
 # Régression de l'assistant RAG
 
-## Point de départ vérifié
+## Contrat intégré
 
-La branche est basée sur `main` au commit `ee5cb73`, après fusion de la PR #5
-(synchronisation incrémentale). À ce point, les citations vérifiables ne sont pas
-implémentées : `grounded` signifie seulement qu'un résultat Qdrant existe, et
-tous les résultats sont renvoyés comme sources. Aucune priorité métier entre deux
-documents ou deux versions de procédure n'est définie. Les tests ne supposent
-pas l'implémentation d'un autre prompt ou d'une PR non fusionnée.
+La suite conserve la synchronisation incrémentale, la recherche hybride et le
+contrôle des révisions après génération. Elle utilise désormais le contrat de
+citations par élément décrit dans [GROUNDING.md](GROUNDING.md), avec des doubles
+Ollama adaptés à ce protocole strict.
 
 ## Tests rapides, sans services
 
@@ -55,9 +53,9 @@ Des sorties malformées et hostiles doivent échouer même avec un identifiant v
 | Réponse présente | Bon chemin relatif, page 2, passage exact, identifiant stable et valeur `42.5 kPa` |
 | Réponse absente malgré des résultats | Refus exact, `grounded: false`, aucune source |
 | Aucun résultat ou index vide | Même refus, aucun appel de génération |
-| Deux procédures contradictoires | Passages séparés à `18 kPa` et `42.5 kPa`, avertissement sans priorité inventée; refus aussi acceptable en évaluation locale |
+| Deux procédures contradictoires | Refus explicite des indications à `18 kPa` et `42.5 kPa` sans priorité inventée |
 | Code précis dans la question | `ZX-417` conservé; contenu libre substituant code, valeur ou unité rejeté |
-| Injection dans le PDF | Texte dans les données utilisateur, aucun nouveau rôle système; sortie `PIRATE`/fausse source rejetée |
+| Injection dans le PDF | Injection évidente refusée avant génération; sorties hostiles non détectées rejetées par le contrat |
 | PDF vierge, corrompu, chiffré ou illisible | Erreur maîtrisée, ancienne version encore citable, autres documents préservés |
 | Génération invalide | JSON malformé, types incorrects, identifiant inventé, texte libre ou fausses métadonnées : refus |
 | Passage réel mais non retrouvé | Référence rejetée, même si le point existe dans Qdrant |
@@ -72,22 +70,16 @@ Les champs publics `answer`, `grounded`, `sources`, `document`, `page`, `excerpt
 et `score` restent présents. Chaque source reçoit aussi `passage_id` (UUID du point
 Qdrant, stable tant que la révision et le découpage restent inchangés).
 
-Ollama reçoit un schéma JSON et doit retourner `{"passage_ids": ["..."]}`.
-Le serveur rejette toute sortie non conforme, tout champ supplémentaire ou toute
-référence non retrouvée dans **cette** recherche. Une liste vide signifie un refus.
-Les références sont ensuite recontrôlées contre le manifeste actif après génération.
+Ollama reçoit un schéma strict `status` et `answer: [{source_id, quote}]`.
+Le serveur vérifie chaque identifiant, le texte exact de l'extrait, les limites
+et les révisions actives après génération. La réponse expose `claims` avec des
+citations par élément et uniquement les sources utilisées, dont `excerpt` conserve
+le passage complet et ses blocs. Les métadonnées `passage_id`, `revision` et
+`fingerprint` restent disponibles. Aucune prose libre n'est affichée.
 
-La réponse devient **extractive** : le serveur affiche les passages complets,
-séparés, avec leur document/page, au lieu d'afficher de la prose libre du modèle.
-Cette correction empêche le modèle d'inventer des valeurs dans le texte affiché
-ou d'accompagner une bonne référence d'une affirmation fabriquée. Les sources
-renvoyées sont seulement celles sélectionnées et validées, et leur `excerpt`
-contient le passage complet. Le frontend existant peut afficher ce contrat.
-
-Quand plusieurs documents sont retrouvés, un avertissement indique qu'aucune
-priorité de version n'existe. Le serveur ne déduit pas une autorité à partir du
-nom du fichier, d'une date ou de l'ordre des résultats. Ce signalement est
-conservateur : il peut apparaître même si les documents sont complémentaires.
+Le rappel officiel et l'avertissement d'absence de priorité de version entre
+plusieurs documents sont fournis dans `safety_notice` et affichés par l'interface.
+Les contradictions et injections évidentes du jeu de régression attendent un refus.
 
 `grounded: true` signifie ici **provenance vérifiée des passages affichés**.
 Cela ne prouve ni leur pertinence pour la question, ni leur exactitude métier, ni
@@ -127,8 +119,7 @@ génération incluses, mais pas l'ingestion préalable. Une panne d'ingestion pr
 une entrée en échec pour chaque question concernée, sans prétendre les avoir posées.
 Code de sortie 0 si les contrôles passent, 1 sinon (nettoyage compris).
 
-Le cas contradictoire exige soit le refus exact, soit les **deux** documents cités
-avec l'avertissement. Les cinq questions ne reproduisent pas les pannes ni toutes
+Le cas contradictoire exige le refus exact. Les cinq questions ne reproduisent pas les pannes ni toutes
 les variantes hostiles de la CI. Cette évaluation n'est appelée par aucun job CI
 obligatoire. Un bon résultat sur cinq questions ne constitue aucune garantie de
 sécurité ou d'exactitude.

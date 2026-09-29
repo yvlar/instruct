@@ -130,15 +130,12 @@ son digest demande toujours une nouvelle collection.
 L'API conserve `answer`, `grounded`, `sources`, ainsi que document/page/extrait/score.
 Chaque source conserve `passage_id` et ajoute `revision` et `fingerprint`.
 Le protocole fusionné sur `main` reste inchangé : le modèle retourne uniquement
-`{"passage_ids": ["uuid"]}`. `answering.py` valide tous les identifiants contre les
-seuls passages **envoyés** au modèle et refuse les champs supplémentaires.
-La réponse est construite côté serveur à partir des passages complets; aucune
-réponse ou citation rédigée librement par le modèle n'est acceptée. Les métadonnées
-proviennent exclusivement de l'index. Seuls les passages sélectionnés sont cités.
-Les documents différents restent présentés séparément, avec l'avertissement de
-version existant. Une sortie invalide, une référence inventée ou une sélection
-vide produit le refus standard, `grounded: false` et aucune source. Sans passage,
-aucun appel de génération n'est effectué.
+`status` et `answer: [{source_id, quote}]`. `grounding.py` valide les identifiants,
+les extraits exacts et les limites contre les seuls passages effectivement envoyés.
+Les métadonnées viennent du stockage; aucune prose libre n'est rendue.
+Les sources complètes conservent les blocs originaux et les UUID Qdrant.
+Les documents différents restent distincts, et le rappel de version est conservé
+dans `safety_notice`. Voir [GROUNDING.md](GROUNDING.md) pour le contrat actuel.
 
 Après génération, les révisions sélectionnées sont revérifiées sous verrou. Un
 document retiré ou remplacé pendant cet appel entraîne un refus. Un verrou encore
@@ -256,3 +253,15 @@ vérifiées localement avec Compose 2.39.4. La construction Docker a été tent�
 mais le socket du daemon est inaccessible dans cet environnement; le job Docker
 de la CI construit les deux images applicatives. Les contrôles de CI portent
 sur le commit de la PR et sont consultables directement sur GitHub.
+
+## Intégration des citations par élément
+
+Le parcours `/api/ask` utilise maintenant `grounding.py` et le protocole strict
+`status` + `answer: [{source_id, quote}]`, décrit dans [GROUNDING.md](GROUNDING.md).
+Il conserve le classement, l'UUID Qdrant `passage_id`, les révisions, les empreintes,
+les blocs des extraits et le contrôle de fraîcheur après génération.
+`claims` relie chaque extrait choisi à sa source; aucune prose libre n'est acceptée.
+Les contradictions et injections évidentes sont refusées. Le budget de génération
+s'ajoute à `CONTEXT_MAX_CHARS`; on ne saute jamais le premier passage trop long
+pour présenter une valeur voisine plus courte. Le score affiché est un rang RRF,
+pas une similarité vectorielle ou une probabilité de vérité.

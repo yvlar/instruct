@@ -52,6 +52,12 @@ def check_answer(case: dict, answer: dict, documents: Path) -> list[str]:
     if answer.get("grounded") is not True or not answer.get("sources"):
         return ["Réponse documentée attendue"]
     sources = answer["sources"]
+    known = {s.get("source_id") for s in sources}
+    if not answer.get("claims") or any(
+        not c.get("source_ids") or not set(c["source_ids"]) <= known
+        for c in answer.get("claims", [])
+    ):
+        failures.append("Affirmation sans source connue")
     actual = {(s["document"], s["page"]) for s in sources}
     if actual != {tuple(source) for source in case["expected_sources"]}:
         failures.append("Document ou page inattendu")
@@ -73,8 +79,17 @@ def check_answer(case: dict, answer: dict, documents: Path) -> list[str]:
             excerpt = source["excerpt"]
             if not excerpt_in_page(excerpt, text):
                 failures.append("Extrait absent de la page citée")
-            marker = f"[{number}] {source['document']}, p. {page}"
-            if marker not in answer["answer"] or excerpt not in answer["answer"]:
+            linked = [
+                c
+                for c in answer.get("claims", [])
+                if source.get("source_id") in c["source_ids"]
+            ]
+            if not linked or any(
+                normalize(c["text"]) not in normalize(excerpt)
+                or c["text"] not in answer["answer"]
+                or f"[{number}]" not in answer["answer"]
+                for c in linked
+            ):
                 failures.append("Citation sans passage correspondant dans la réponse")
         except (ValueError, RuntimeError):
             failures.append("PDF cité illisible")

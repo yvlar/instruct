@@ -1,4 +1,3 @@
-import json
 import math
 import uuid
 
@@ -6,14 +5,16 @@ import fitz
 import httpx
 from qdrant_client import QdrantClient, models
 
-from .answering import (
-    SYSTEM_PROMPT,
-    PassageSelection,
-    refusal,
-    render_answer,
-    selected_hits,
-)
+from .answering import VERSION_WARNING
 from .config import settings
+from .grounding import (
+    SYSTEM_PROMPT,
+    GeneratedAnswer,
+    model_message,
+    prepare_passages,
+    refusal,
+    verified_answer,
+)
 from .indexing import (
     PIPELINE_VERSION,
     SCHEMA_VERSION,
@@ -327,48 +328,56 @@ class KnowledgeBase:
             return fuse(question, semantic, lexical)
 
     async def ask(self, question: str) -> dict:
-        passages = select_context(
+        candidates = select_context(
             await self.retrieve(question),
             max_passages=self.settings.top_k,
             max_chars=self.settings.context_max_chars,
         )
+        passages = prepare_passages(candidates, question, self.settings)
         if not passages:
             return refusal()
-        context = {
-            "question": question,
-            "passages": [json.loads(p.context()) for p in passages],
-        }
+        output_schema = GeneratedAnswer.model_json_schema()
+        output_schema["$defs"]["Selection"]["properties"]["source_id"]["enum"] = [
+            passage.source_id for passage in passages
+        ]
         response = await self.http.post(
             f"{self.settings.ollama_url}/api/chat",
             json={
                 "model": self.settings.ollama_model,
                 "stream": False,
-                "format": PassageSelection.model_json_schema(),
+                "think": False,
+                "format": output_schema,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(context, ensure_ascii=False),
-                    },
+                    {"role": "user", "content": model_message(question, passages)},
                 ],
-                "options": {"temperature": 0.1},
+                "options": {
+                    "temperature": 0,
+                    "num_ctx": self.settings.ollama_num_ctx,
+                    "num_predict": self.settings.ollama_num_predict,
+                },
             },
         )
         response.raise_for_status()
-        selected = selected_hits(
-            response.json().get("message", {}).get("content"), passages
-        )
-        if not selected:
+        try:
+            envelope = response.json()
+        except ValueError:
             return refusal()
-        # Keep main's freshness guarantee across the unlocked generation call.
+        result = verified_answer(envelope, passages, self.settings)
+        if not result["grounded"]:
+            return result
+        if len({p.document for p in passages}) > 1:
+            result["safety_notice"] += " " + VERSION_WARNING
+        # A cited revision may have been removed/replaced during local generation.
         with index_lock(self.settings, shared=True):
             _, current = self.store.read()
             if any(
-                current.get(hit.document, {}).get("revision") != hit.revision
-                for hit in selected
+                current.get(source["document"], {}).get("revision")
+                != source["revision"]
+                for source in result["sources"]
             ):
                 return refusal()
-            return render_answer(selected, passages)
+        return result
 
 
 knowledge_base = KnowledgeBase()

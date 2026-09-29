@@ -1,5 +1,4 @@
 import asyncio
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +8,7 @@ from app.services import KnowledgeBase
 from evaluation import run
 from evaluation.checks import load_cases
 from test_indexing import FaultyQdrant
-from test_rag_regression import ControlledOllama
+from test_rag_regression import ControlledOllama, selection_output
 
 
 @pytest.mark.parametrize("malformed", [False, True])
@@ -26,14 +25,13 @@ def test_report_detects_failures_and_only_cleans_its_collections(
         def select(context):
             if malformed:
                 return "broken model output"
-            question = context["question"]
-            term = "ZX-417" if "ZX-417" in question else "kPa"
-            identifiers = (
-                []
+            question = context["QUESTION"]
+            term = (
+                None
                 if "huile" in question
-                else [p["id"] for p in context["passages"] if term in p["text"]]
+                else ("ZX-417" if "ZX-417" in question else "kPa")
             )
-            return json.dumps({"passage_ids": identifiers})
+            return selection_output(context, term)
 
         model.output = select
         qdrant = FaultyQdrant()

@@ -7,8 +7,9 @@ from dataclasses import replace
 import fitz
 import httpx
 import pytest
-from app.answering import REFUSAL, render_answer, selected_hits
+from app.answering import render_answer, selected_hits
 from app.chunking import chunk_text
+from app.grounding import refusal
 from app.indexing import CONTROL_ID, IndexErrorBase, PdfSource
 from app.lexical import LexicalIndex, exact_match
 from app.retrieval import Passage, fuse, select_context
@@ -249,7 +250,7 @@ def test_no_relevant_candidates_refuses_without_chat(env):
 
     env.kb.embed = orthogonal
     answer = run(env.kb.ask("Température du four Neptune?"))
-    assert answer == {"answer": REFUSAL, "grounded": False, "sources": []}
+    assert answer == refusal()
     assert env.ollama.chat_requests == []
 
 

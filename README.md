@@ -15,10 +15,10 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - synchronisation incrémentale des PDF texte : ajout, modification et suppression;
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
-- recherche vectorielle avec Qdrant;
-- sélection structurée de passages avec Qwen via Ollama;
-- réponses extractives avec identifiant de passage, document, page et texte exact;
-- refus explicite si aucun passage n'est sélectionné ou si la sortie est invalide;
+- recherche hybride locale : Qdrant sémantique et SQLite FTS5 pour les termes exacts;
+- génération avec Qwen via Ollama;
+- réponses extractives avec citations par élément, document, page et passage vérifiés;
+- refus prudent si les passages sont jugés insuffisants, ambigus ou si les citations sont invalides;
 - API FastAPI et interface React/TypeScript;
 - déploiement conteneurisé avec Docker Compose.
 
@@ -178,7 +178,16 @@ curl -X POST http://localhost:8000/api/ask \
 |---|---|---|
 | `GET` | `/healthz` | Vérifie que l'API répond |
 | `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
-| `POST` | `/api/ask` | Retourne une réponse fondée sur les passages retrouvés |
+| `POST` | `/api/ask` | Retourne des extraits avec citations vérifiées, ou un refus explicite |
+
+`answer` reste une chaîne utilisable par les clients existants. `claims` relie
+chaque extrait à ses `source_ids`; `sources` contient uniquement les passages
+utilisés et leur `source_id`. `safety_notice` fournit le rappel officiel, même
+en cas de refus. L'interface affiche les liens de citation par élément.
+
+**`grounded` valide la provenance des extraits, pas leur vérité ni leur pertinence
+sémantique.** Un passage authentique peut être incomplet ou mal interprété.
+Consultez [le contrat, les limites et le banc de régression](docs/GROUNDING.md).
 
 ## Recherche hybride et migration
 
@@ -209,11 +218,17 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `CHUNK_SIZE` | `1400` | Taille cible en caractères, de 100 à 16000 |
 | `CHUNK_OVERLAP` | `250` | Chevauchement, inférieur à `CHUNK_SIZE` |
 | `INDEX_LOCK_PATH` | `/tmp/instruct-locks` | Verrous locaux; Compose impose le volume partagé `/state/locks` |
-| `MIN_SCORE` | `0.35` | Seuil sémantique seulement |
-| `TOP_K` | `4` | Nombre maximal de passages envoyés au modèle |
-| `RETRIEVAL_CANDIDATES` | `24` | Candidats par recherche sémantique/lexicale |
-| `CONTEXT_MAX_CHARS` | `8000` | Budget du contexte sérialisé en caractères |
-| `LEXICAL_INDEX_PATH` | `./data/lexical` | SQLite persistant; Compose impose `/state/lexical` |
+| `MIN_SCORE` | `0.35` | Seuil de similarité vectorielle, sans valeur de probabilité de vérité |
+| `TOP_K` | `4` | Nombre maximal de passages retenus |
+| `RETRIEVAL_CANDIDATES` | `24` | Candidats par méthode avant fusion |
+| `CONTEXT_MAX_CHARS` | `8000` | Budget de présélection sérialisée, avant les limites de génération |
+| `LEXICAL_INDEX_PATH` | `./data/lexical` | Index SQLite local; Compose utilise `/state/lexical` |
+| `MAX_CONTEXT_CHARS` | `3200` | Plafond du texte fourni au modèle; budget UTF-8 conservateur supplémentaire |
+| `MAX_PASSAGE_CHARS` | `1400` | Passage entier maximum; les passages trop longs sont omis |
+| `MAX_ANSWER_CHARS` | `1600` | Longueur cumulée maximale des extraits sélectionnés |
+| `MAX_RESPONSE_CHARS` | `6000` | Taille maximale du JSON accepté |
+| `OLLAMA_NUM_CTX` | `4096` | Fenêtre de contexte en tokens |
+| `OLLAMA_NUM_PREDICT` | `768` | Tokens de sortie maximum, JSON compris |
 
 ## Confidentialité et sécurité
 

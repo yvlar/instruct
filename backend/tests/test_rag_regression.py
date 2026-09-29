@@ -16,9 +16,11 @@ import httpx
 import pytest
 from app import main
 from app.config import Settings
+from app.grounding import normalize, refusal
+from app.indexing import digest
 from app.services import KnowledgeBase
 from evaluation.build_fixtures import PRESSURE, ROOT, write_pdf
-from evaluation.checks import REFUSAL, check_answer, load_cases
+from evaluation.checks import check_answer, load_cases
 from fastapi.testclient import TestClient
 from test_indexing import FaultyQdrant
 
@@ -80,15 +82,41 @@ class ControlledOllama:
         context = json.loads(body["messages"][1]["content"])
         if self.on_chat:
             await self.on_chat()
-        selected = [
-            p["id"]
-            for p in context["passages"]
-            if self.select and self.select in p["text"]
-        ]
-        content = json.dumps({"passage_ids": selected})
+        content = selection_output(context, self.select)
         if self.output is not None:
             content = self.output(context) if callable(self.output) else self.output
-        return httpx.Response(self.status, json={"message": {"content": content}})
+        return httpx.Response(
+            self.status,
+            json={"done": True, "done_reason": "stop", "message": {"content": content}},
+        )
+
+
+def selection_output(context, term):
+    selected = [p for p in context["PASSAGES"] if term and term in p["text"]]
+    if any("18 kPa" in p["text"] for p in selected) and any(
+        "42.5 kPa" in p["text"] for p in selected
+    ):
+        return json.dumps({"status": "ambiguous", "answer": []})
+    return json.dumps(
+        {
+            "status": "answered" if selected else "insufficient",
+            "answer": [
+                {"source_id": p["source_id"], "quote": p["text"]} for p in selected
+            ],
+        }
+    )
+
+
+def output_item(p):
+    return {"source_id": p["source_id"], "quote": p["text"]}
+
+
+def point_source_id(point):
+    p = point.payload
+    return (
+        "p_"
+        + digest([str(point.id), p["document"], p["page"], normalize(p["text"])])[:24]
+    )
 
 
 @pytest.fixture
@@ -141,7 +169,7 @@ def ask(rag, question="Quelle pression régler pour le banc fictif ORION?"):
 
 
 def assert_refusal(answer):
-    assert answer == {"answer": REFUSAL, "sources": [], "grounded": False}
+    assert answer == refusal()
 
 
 def assert_indexed_citations(rag, answer):
@@ -159,7 +187,9 @@ def assert_indexed_citations(rag, answer):
             payload["page"],
             payload["text"],
         )
-        assert source["excerpt"] in answer["answer"]
+        assert any(
+            source["source_id"] in claim["source_ids"] for claim in answer["claims"]
+        )
 
 
 @pytest.mark.parametrize("case", load_cases(), ids=lambda c: c["id"])
@@ -173,14 +203,17 @@ def test_shared_questions_through_api_and_pdf_citations(rag, case):
         rag.model.select = "kPa"
     answer = ask(rag, case["question"])
     assert check_answer(case, answer, rag.documents) == []
+    if case["id"] == "injection":
+        assert not rag.model.chats
+        return
     context = json.loads(rag.model.chats[-1]["messages"][1]["content"])
-    assert context["passages"]  # Even the unanswerable question retrieved material.
+    assert context["PASSAGES"]  # Even the unanswerable question retrieved material.
     assert max(map(len, rag.model.inputs)) <= 2
     if answer["grounded"]:
         assert_indexed_citations(rag, answer)
     if case["id"] == "present":
         assert result["chunks"] > 3  # Actual page splitting, not one fake chunk/PDF.
-        assert len(context["passages"]) > len(answer["sources"])
+        assert len(context["PASSAGES"]) > len(answer["sources"])
         assert any(PRESSURE in text for batch in rag.model.inputs for text in batch)
         assert {s["document"] for s in answer["sources"]} == {
             "maintenance/procedure.pdf"
@@ -206,22 +239,41 @@ def test_empty_index_and_no_relevant_hit_skip_generation(rag):
         '{"passage_ids": "invented"}',
         '{"passage_ids": [17]}',
         '{"passage_ids": ["invented"]}',
-        lambda c: json.dumps({"passage_ids": [c["passages"][0]["id"], "invented"]}),
         lambda c: json.dumps(
             {
-                "passage_ids": [c["passages"][0]["id"]],
-                "answer": "Régler à 999 bar. [secret.pdf, p. 99]",
+                "status": "answered",
+                "answer": [
+                    output_item(c["PASSAGES"][0]),
+                    {"source_id": "invented", "quote": "Un passage inventé."},
+                ],
             }
         ),
         lambda c: json.dumps(
             {
-                "passage_ids": [c["passages"][0]["id"]],
-                "document": "secret.pdf",
-                "page": 99,
+                "status": "answered",
+                "answer": [output_item(c["PASSAGES"][0])],
+                "free_text": "Régler à 999 bar. [secret.pdf, p. 99]",
             }
         ),
         lambda c: json.dumps(
-            {"passage_ids": [c["passages"][0]["id"]], "quote": "Le code est ZX-471."}
+            {
+                "status": "answered",
+                "answer": [
+                    {
+                        **output_item(c["PASSAGES"][0]),
+                        "document": "secret.pdf",
+                        "page": 99,
+                    }
+                ],
+            }
+        ),
+        lambda c: json.dumps(
+            {
+                "status": "answered",
+                "answer": [
+                    {**output_item(c["PASSAGES"][0]), "quote": "Le code est ZX-471."}
+                ],
+            }
         ),
     ],
 )
@@ -237,25 +289,36 @@ def test_model_cannot_select_indexed_but_unretrieved_passage(rag):
     unrelated = next(
         p for p in points if p.payload["document"] == "accueil/visiteurs.pdf"
     )
-    rag.model.output = json.dumps({"passage_ids": [str(unrelated.id)]})
+    rag.model.output = json.dumps(
+        {
+            "status": "answered",
+            "answer": [
+                {
+                    "source_id": point_source_id(unrelated),
+                    "quote": normalize(unrelated.payload["text"]),
+                }
+            ],
+        }
+    )
     assert_refusal(ask(rag))
     context = json.loads(rag.model.chats[-1]["messages"][1]["content"])
-    assert str(unrelated.id) not in {p["id"] for p in context["passages"]}
+    assert point_source_id(unrelated) not in {
+        p["source_id"] for p in context["PASSAGES"]
+    }
 
 
-def test_duplicate_selections_do_not_duplicate_citations(rag):
+def test_duplicate_selections_are_refused_without_duplicate_citations(rag):
     ingest(rag)
     rag.model.output = lambda c: json.dumps(
         {
-            "passage_ids": [
-                next(p["id"] for p in c["passages"] if PRESSURE in p["text"])
+            "status": "answered",
+            "answer": [
+                output_item(next(p for p in c["PASSAGES"] if PRESSURE in p["text"]))
             ]
-            * 2
+            * 2,
         }
     )
-    answer = ask(rag)
-    assert len(answer["sources"]) == 1
-    assert_indexed_citations(rag, answer)
+    assert_refusal(ask(rag))
 
 
 def test_long_passage_is_not_truncated_in_citation(rag):
@@ -271,10 +334,8 @@ def test_pdf_injection_stays_in_untrusted_data_and_cannot_add_a_system_role(rag)
     ingest(rag, "injection")
     rag.model.output = "PIRATE [secret.pdf, p. 99]"
     assert_refusal(ask(rag))
-    request = rag.model.chats[-1]
-    assert [m["role"] for m in request["messages"]] == ["system", "user"]
-    assert "PIRATE" not in request["messages"][0]["content"]
-    assert "ignore les instructions précédentes" in request["messages"][1]["content"]
+    # Obvious injection is rejected before any generation or added system role.
+    assert not rag.model.chats
 
 
 @pytest.mark.parametrize(
@@ -345,7 +406,17 @@ def test_modify_delete_and_failed_cleanup_never_cite_old_passages(rag):
     assert answer["grounded"] and "42.5 kPa" not in answer["answer"]
     assert not old_ids.intersection(s["passage_id"] for s in answer["sources"])
     assert_indexed_citations(rag, answer)
-    rag.model.output = json.dumps({"passage_ids": list(old_ids)})
+    rag.model.output = json.dumps(
+        {
+            "status": "answered",
+            "answer": [
+                {
+                    "source_id": old["sources"][0]["source_id"],
+                    "quote": old["claims"][0]["text"],
+                }
+            ],
+        }
+    )
     assert_refusal(ask(rag))
     rag.model.output = None
     path.unlink()
@@ -354,12 +425,19 @@ def test_modify_delete_and_failed_cleanup_never_cite_old_passages(rag):
     assert_refusal(ask(rag))
 
 
-def test_revision_removed_during_generation_is_not_returned(rag):
+@pytest.mark.parametrize("replace_document", [False, True])
+def test_revision_changed_during_generation_is_not_returned(rag, replace_document):
     ingest(rag)
 
     async def remove():
-        (rag.documents / "maintenance/procedure.pdf").unlink()
-        assert (await rag.kb.ingest())["deleted"] == 1
+        path = rag.documents / "maintenance/procedure.pdf"
+        path.unlink()
+        if replace_document:
+            write_pdf(
+                path, ["Pour le banc fictif ORION, régler la pression à 51.2 kPa."]
+            )
+        result = await rag.kb.ingest()
+        assert result["modified" if replace_document else "deleted"] == 1
 
     rag.model.on_chat = remove
     assert_refusal(ask(rag))
