@@ -7,8 +7,8 @@ from dataclasses import replace
 import fitz
 import httpx
 import pytest
+from app.answering import REFUSAL, render_answer, selected_hits
 from app.chunking import chunk_text
-from app.citations import REFUSAL, validate_answer
 from app.indexing import CONTROL_ID, IndexErrorBase, PdfSource
 from app.lexical import LexicalIndex, exact_match
 from app.retrieval import Passage, fuse, select_context
@@ -156,7 +156,7 @@ def test_chunking_never_loses_short_headings_or_long_steps():
 
 def test_context_budget_is_hard_and_never_truncates_an_exact_step():
     one, two = p(), p("p2", "Une autre étape.")
-    cost = len(one.context())
+    cost = len(one.context()) + 2
     assert select_context([one, two], max_passages=4, max_chars=cost) == [one]
     assert select_context([one, two], max_passages=4, max_chars=cost - 1) == []
     assert select_context([one, two], max_passages=1, max_chars=8000) == [one]
@@ -260,11 +260,7 @@ def test_rank_alone_does_not_make_a_generated_refusal_grounded(env):
         if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
-                json={
-                    "message": {
-                        "content": json.dumps({"answer": REFUSAL, "citations": []})
-                    }
-                },
+                json={"message": {"content": json.dumps({"passage_ids": []})}},
             )
         return env.ollama(request)
 
@@ -295,21 +291,17 @@ def test_rank_alone_does_not_make_a_generated_refusal_grounded(env):
     ],
 )
 def test_invalid_citations_fail_closed(content):
-    assert validate_answer(content, [p()])["grounded"] is False
-    assert validate_answer(content, [p()])["sources"] == []
+    assert selected_hits(content, [p()]) == []
 
 
 def test_only_valid_used_passages_are_sources():
-    content = json.dumps(
-        {
-            "answer": "Couper l'alimentation.",
-            "citations": [{"passage_id": "p1", "quote": "Couper l'alimentation."}],
-        }
-    )
-    result = validate_answer(content, [p(), p("unused", "Inutile.")])
+    passages = [p(), p("unused", "Inutile.")]
+    content = json.dumps({"passage_ids": ["p1"]})
+    result = render_answer(selected_hits(content, passages), passages)
     assert result["grounded"] is True
     assert [s["passage_id"] for s in result["sources"]] == ["p1"]
     assert result["sources"][0]["revision"] == "rev1"
+    assert "Couper l'alimentation." in result["answer"]
 
 
 def test_user_query_cannot_inject_fts_syntax(env):

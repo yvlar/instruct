@@ -6,6 +6,9 @@ Le point de départ est `main` au commit `ee5cb73`, après fusion de la PR #5.
 L'indexation incrémentale, les manifestes, les verrous et les tests de reprise y
 étaient présents. La validation des citations n'y était **pas** implémentée :
 `grounded` dépendait seulement de l'existence d'un résultat Qdrant.
+La branche intègre maintenant `main` au commit `ff9c22b` (PR #7) : sa sélection
+structurée de passages, son rendu extractif et ses tests de régression sont
+conservés. Le module de citations parallèle initial de cette PR a été supprimé.
 
 Qdrant et `nomic-embed-text` sont conservés. SQLite **FTS5**, disponible dans le
 Python de l'image backend, fournit la recherche lexicale sur disque, sans serveur,
@@ -125,19 +128,33 @@ son digest demande toujours une nouvelle collection.
 ## Réponses et citations
 
 L'API conserve `answer`, `grounded`, `sources`, ainsi que document/page/extrait/score.
-Chaque source ajoute `passage_id`, `revision` et `fingerprint`. Le LLM doit retourner
-`answer` et `citations: [{passage_id, quote}]`; le backend vérifie l'identifiant
-contre les seuls passages **envoyés** au modèle et l'extrait contre leur texte.
-Les métadonnées viennent exclusivement de l'index. Seuls les passages cités sont
-retournés. Une sortie invalide, une référence inventée, un extrait inventé, une
-citation vide ou un refus du modèle produit le refus standard, `grounded: false`
-et aucune source. Sans passage, aucun appel de génération n'est effectué.
+Chaque source conserve `passage_id` et ajoute `revision` et `fingerprint`.
+Le protocole fusionné sur `main` reste inchangé : le modèle retourne uniquement
+`{"passage_ids": ["uuid"]}`. `answering.py` valide tous les identifiants contre les
+seuls passages **envoyés** au modèle et refuse les champs supplémentaires.
+La réponse est construite côté serveur à partir des passages complets; aucune
+réponse ou citation rédigée librement par le modèle n'est acceptée. Les métadonnées
+proviennent exclusivement de l'index. Seuls les passages sélectionnés sont cités.
+Les documents différents restent présentés séparément, avec l'avertissement de
+version existant. Une sortie invalide, une référence inventée ou une sélection
+vide produit le refus standard, `grounded: false` et aucune source. Sans passage,
+aucun appel de génération n'est effectué.
 
-Cette validation prouve la **provenance**, pas l'implication logique de toute la
-réponse. Le modèle peut encore mal interpréter un extrait réel. Le prompt exige
-un refus si le contexte ne suffit pas. Un rang élevé et `grounded: true` ne sont
-ni une certification de justesse ni une autorisation d'exécuter une procédure.
-Cette limite est distincte des tests déterministes de recherche et de références.
+Après génération, les révisions sélectionnées sont revérifiées sous verrou. Un
+document retiré ou remplacé pendant cet appel entraîne un refus. Un verrou encore
+occupé par une ingestion produit `INDEX_BUSY`. La recherche hybride ne réintroduit
+pas de citation obsolète, y compris quand des anciens points physiques subsistent.
+
+La vérification PDF des tests et de l'évaluation accepte les retours à la ligne
+conservés et un titre répété avant une étape plus bas sur la page. Chaque bloc doit
+exister dans l'ordre sur la page citée; seuls les espaces sont normalisés, jamais
+les valeurs, unités ou signes. Les textes d'autres pages et valeurs falsifiées
+continuent d'être refusés. Les bases SQLite de l'évaluation sont temporaires et
+isolées, comme ses collections Qdrant.
+
+Le modèle peut encore sélectionner un passage hors sujet. La provenance vérifiée
+ne constitue donc pas une preuve de pertinence ou une autorisation d'exécuter une
+procédure. Un rang élevé n'est jamais utilisé pour déclarer une réponse vraie.
 
 ## Réglages
 
@@ -231,7 +248,9 @@ perte/réparation de SQLite, migrations, refus et citations invalides. Ollama es
 simulé; PDF, SQLite et filtres Qdrant embarqués sont réellement exécutés. Le test
 HTTP facultatif nécessite des services locaux et reste désactivé sinon.
 
-La suite backend compte 67 tests réussis et un test HTTP facultatif ignoré.
+Après intégration de `main` (`ff9c22b`), la suite backend compte **105 tests réussis**
+et un test HTTP facultatif ignoré. Elle conserve les régressions de citations,
+refus, sorties hostiles et modifications pendant génération de la PR #7.
 La compilation frontend et les configurations Compose standard/GPU ont été
 vérifiées localement avec Compose 2.39.4. La construction Docker a été tentée
 mais le socket du daemon est inaccessible dans cet environnement; le job Docker

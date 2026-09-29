@@ -39,3 +39,4 @@ ollama_data/
 data/
 benchmark-results/
 *.sqlite3
+evaluation-results/

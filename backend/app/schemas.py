@@ -6,11 +6,11 @@ class Question(BaseModel):
 
 
 class Source(BaseModel):
+    passage_id: str
     document: str
     page: int
     excerpt: str
     score: float
-    passage_id: str
     revision: str
     fingerprint: str
 

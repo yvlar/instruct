@@ -65,20 +65,16 @@ class FakeOllama:
         body = json.loads(request.content)
         if request.url.path == "/api/chat":
             self.chat_requests.append(body)
-            context = (
-                body["messages"][1]["content"]
-                .split("CONTEXTE:\n", 1)[1]
-                .split("\n\nQUESTION:", 1)[0]
-            )
-            passages = [json.loads(part) for part in context.split("\n\n")]
-            content = {
-                "answer": "Réponse sourcée.",
-                "citations": [
-                    {"passage_id": p["id"], "quote": p["text"]} for p in passages
-                ],
-            }
+            context = json.loads(body["messages"][1]["content"])
             return httpx.Response(
-                200, json={"message": {"content": json.dumps(content)}}
+                200,
+                json={
+                    "message": {
+                        "content": json.dumps(
+                            {"passage_ids": [p["id"] for p in context["passages"]]}
+                        )
+                    }
+                },
             )
         assert request.url.path == "/api/embed"
         assert isinstance(body["input"], list)

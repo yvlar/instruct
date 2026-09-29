@@ -4,7 +4,7 @@
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
 
-Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de produire une réponse accompagnée du document, de la page et de l'extrait source.
+Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de sélectionner ceux qui répondent à la question. Le serveur affiche ces extraits avec leurs références vérifiées.
 
 > [!WARNING]
 > Ce projet aide à retrouver de l'information. Il ne remplace jamais une procédure officielle à jour, une formation, une analyse de risques, une consignation ou le jugement d'une personne qualifiée. Ne prenez aucune décision de sécurité uniquement à partir d'une réponse générée.
@@ -16,9 +16,9 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
 - recherche vectorielle avec Qdrant;
-- génération avec Qwen via Ollama;
-- réponses avec document, page, extrait et score de pertinence;
-- refus explicite lorsque les documents ne contiennent pas la réponse;
+- sélection structurée de passages avec Qwen via Ollama;
+- réponses extractives avec identifiant de passage, document, page et texte exact;
+- refus explicite si aucun passage n'est sélectionné ou si la sortie est invalide;
 - API FastAPI et interface React/TypeScript;
 - déploiement conteneurisé avec Docker Compose.
 
@@ -33,6 +33,11 @@ Question -> embedding -> recherche sémantique ------+
 ```
 
 La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Les [tests de régression RAG et l'évaluation locale facultative](docs/RAG_REGRESSION.md)
+couvrent les citations, refus, valeurs exactes, PDF invalides et synchronisations.
+`grounded: true` atteste la provenance des extraits affichés, pas leur pertinence
+ni l'exactitude métier du document.
 
 ## Prérequis
 

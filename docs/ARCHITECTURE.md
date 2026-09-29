@@ -11,7 +11,7 @@
 | Ollama / `nomic-embed-text` | Embeddings des passages et questions |
 | Qdrant | Passages vectoriels et manifeste sans vecteurs |
 | SQLite FTS5 | Recherche lexicale locale des mêmes révisions |
-| Ollama / Qwen | Génération de réponses à partir du contexte retrouvé |
+| Ollama / Qwen + `answering.py` | Sélection structurée de passages et rendu extractif côté serveur |
 
 ## Identité et compatibilité
 
@@ -108,8 +108,12 @@ observables, sans fournir de verrou distribué sur ces ressources externes.
 La recherche interroge les révisions actives dans Qdrant et SQLite, puis fusionne
 les candidats par priorité exacte et RRF. Les UUID, versions et pages restent
 attachés aux passages. Le contexte garde au maximum quatre passages entiers sous
-un budget configurable. Une sortie structurée et des extraits vérifiables servent
-à valider la provenance des seules sources utilisées, jamais la vérité de la réponse.
+un budget configurable. Qwen retourne uniquement des `passage_ids`; le serveur
+valide tous les identifiants contre les seuls passages envoyés, puis restitue
+leurs extraits complets avec citations. Aucun texte libre du modèle n'est accepté.
+Les documents différents restent séparés avec l'avertissement de version existant.
+Après génération, les révisions sont revérifiées sous verrou : une révision
+retirée ou remplacée provoque un refus. Le rang n'est jamais une preuve de vérité.
 
 Le [guide hybride](HYBRID_RETRIEVAL.md) décrit l'algorithme, le schéma 3, les limites
 et les mesures. Lors de l'ingestion décrite ci-dessus, chaque lot Qdrant est aussi
@@ -119,8 +123,8 @@ Un ancien manifeste v2 impose une nouvelle collection; aucune migration silencie
 
 Pendant une ingestion, une autre ingestion ou recherche échoue rapidement avec
 HTTP 503 / `INDEX_BUSY`; il n'y a pas d'attente bloquant l'event loop sur un verrou.
-Une réponse dont les passages ont déjà été récupérés reste une photographie de
-ce moment, même si une synchronisation démarre pendant sa génération.
+Si une synchronisation modifie ou retire une révision sélectionnée pendant la
+génération, la réponse est refusée; une ingestion encore active produit `INDEX_BUSY`.
 
 `portalocker` libère le verrou à la fermeture ou à la mort du processus. Compose
 partage `/state/locks` entre conteneurs du même projet, et refuse de créer

@@ -28,6 +28,17 @@ class Passage:
             p["text"],
         )
 
+    @property
+    def payload(self):
+        """Expose the stored fields expected by the shared extractive renderer."""
+        return {
+            "document": self.document,
+            "revision": self.revision,
+            "fingerprint": self.fingerprint,
+            "page": self.page,
+            "text": self.text,
+        }
+
     def context(self):
         # Delimit untrusted PDF text without pretending document names are instructions.
         return json.dumps(
@@ -83,7 +94,7 @@ def fuse(question, semantic, lexical, *, rrf_k=60):
 
 
 def select_context(passages, *, max_passages, max_chars):
-    selected, used = [], 0
+    selected, used = [], 2  # JSON array brackets; separators cost two characters.
     for passage in passages:
         cost = len(passage.context()) + (2 if selected else 0)
         # Never skip the highest-ranked exact hit to make room for a shorter neighbour.
