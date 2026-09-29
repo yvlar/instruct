@@ -1,0 +1,290 @@
+{
+  "mode": "controlled-toy-embeddings",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "sqlite": "3.53.1",
+  "pymupdf": "1.26.4",
+  "repeat": 10,
+  "documents": 2,
+  "pages": 3,
+  "baseline_commit": "ee5cb73",
+  "chat_calls": 0,
+  "limitations": "Embedded Qdrant sizes/times, not Qdrant server. Toy results do not measure real semantic quality or GPU latency.",
+  "runs": {
+    "semantic_baseline": {
+      "index_ms": 14.060510002309456,
+      "unchanged_ms": 0.9876619951683097,
+      "chunks": 3,
+      "unchanged_chunks_written": 0,
+      "embedding_identity": {
+        "model": "nomic-embed-text",
+        "digest": "toy-v1-not-a-model"
+      },
+      "vector_size": 7,
+      "questions": [
+        {
+          "id": "paraphrase",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 0.7397350018436555,
+          "top_results": [
+            {
+              "id": "5201d666-caf9-5439-8bca-a0ea5dee8081",
+              "document": "orion.pdf",
+              "page": 1
+            },
+            {
+              "id": "0a2b2019-1976-513f-98d1-e05280bb8597",
+              "document": "orion.pdf",
+              "page": 2
+            }
+          ]
+        },
+        {
+          "id": "part",
+          "expected_rank": 2,
+          "no_candidates": false,
+          "median_search_ms": 0.6337260019790847,
+          "top_results": [
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "0a2b2019-1976-513f-98d1-e05280bb8597",
+              "document": "orion.pdf",
+              "page": 2
+            }
+          ]
+        },
+        {
+          "id": "pressure",
+          "expected_rank": 2,
+          "no_candidates": false,
+          "median_search_ms": 0.5571109977609012,
+          "top_results": [
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "0a2b2019-1976-513f-98d1-e05280bb8597",
+              "document": "orion.pdf",
+              "page": 2
+            }
+          ]
+        },
+        {
+          "id": "unit",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 0.6151580018922687,
+          "top_results": [
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "0a2b2019-1976-513f-98d1-e05280bb8597",
+              "document": "orion.pdf",
+              "page": 2
+            }
+          ]
+        },
+        {
+          "id": "emergency",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 0.5266250009299256,
+          "top_results": [
+            {
+              "id": "5201d666-caf9-5439-8bca-a0ea5dee8081",
+              "document": "orion.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "machine",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 0.5469005009217653,
+          "top_results": [
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "absent",
+          "expected_rank": null,
+          "no_candidates": true,
+          "median_search_ms": 0.5000560013286304,
+          "top_results": []
+        }
+      ],
+      "qdrant_disk_bytes": 25455,
+      "lexical_disk_bytes": 0
+    },
+    "hybrid": {
+      "index_ms": 12.50992200220935,
+      "unchanged_ms": 1.636877001146786,
+      "chunks": 7,
+      "unchanged_chunks_written": 0,
+      "embedding_identity": {
+        "model": "nomic-embed-text",
+        "digest": "toy-v1-not-a-model"
+      },
+      "vector_size": 7,
+      "questions": [
+        {
+          "id": "paraphrase",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 1.9785990007221699,
+          "top_results": [
+            {
+              "id": "5201d666-caf9-5439-8bca-a0ea5dee8081",
+              "document": "orion.pdf",
+              "page": 1
+            },
+            {
+              "id": "305fc739-eb76-5b7d-90f0-65128ab99230",
+              "document": "orion.pdf",
+              "page": 2
+            },
+            {
+              "id": "5884e086-366c-572d-9e09-9a4c886eb2d8",
+              "document": "orion.pdf",
+              "page": 2
+            }
+          ]
+        },
+        {
+          "id": "part",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 1.6944324997894,
+          "top_results": [
+            {
+              "id": "305fc739-eb76-5b7d-90f0-65128ab99230",
+              "document": "orion.pdf",
+              "page": 2
+            },
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "pressure",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 2.0262704965716694,
+          "top_results": [
+            {
+              "id": "5884e086-366c-572d-9e09-9a4c886eb2d8",
+              "document": "orion.pdf",
+              "page": 2
+            },
+            {
+              "id": "0b6540b4-5a7e-5ea8-8aa8-4e7a6020d851",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "20c4a920-a7f9-5fad-be5d-77d549735b7b",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "unit",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 1.8640669986780267,
+          "top_results": [
+            {
+              "id": "20c4a920-a7f9-5fad-be5d-77d549735b7b",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "0b6540b4-5a7e-5ea8-8aa8-4e7a6020d851",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "5884e086-366c-572d-9e09-9a4c886eb2d8",
+              "document": "orion.pdf",
+              "page": 2
+            },
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "emergency",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 1.7753690008248668,
+          "top_results": [
+            {
+              "id": "0a2b2019-1976-513f-98d1-e05280bb8597",
+              "document": "orion.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "machine",
+          "expected_rank": 1,
+          "no_candidates": false,
+          "median_search_ms": 1.7455290035286453,
+          "top_results": [
+            {
+              "id": "1f606105-85f7-5cb2-88e5-d791fd2bdff3",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "0b6540b4-5a7e-5ea8-8aa8-4e7a6020d851",
+              "document": "neptune.pdf",
+              "page": 1
+            },
+            {
+              "id": "20c4a920-a7f9-5fad-be5d-77d549735b7b",
+              "document": "neptune.pdf",
+              "page": 1
+            }
+          ]
+        },
+        {
+          "id": "absent",
+          "expected_rank": null,
+          "no_candidates": true,
+          "median_search_ms": 1.3735309985349886,
+          "top_results": []
+        }
+      ],
+      "qdrant_disk_bytes": 33625,
+      "lexical_disk_bytes": 32768
+    }
+  }
+}

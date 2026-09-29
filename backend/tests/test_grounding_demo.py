@@ -41,6 +41,7 @@ def test_demo_pdf_grounding_contract(tmp_path, case):
             _env_file=None,
             documents_path=str(root),
             index_lock_path=str(tmp_path / "locks"),
+            lexical_index_path=str(tmp_path / "lexical"),
         ),
         qdrant=FaultyQdrant(),
         http=httpx.AsyncClient(transport=httpx.MockTransport(ollama)),

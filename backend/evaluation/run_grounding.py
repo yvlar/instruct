@@ -15,7 +15,7 @@ from app.grounding import NOT_FOUND, normalize
 from app.services import KnowledgeBase
 from qdrant_client import QdrantClient
 
-DATA_PATH = Path(__file__).with_name("cases.json")
+DATA_PATH = Path(__file__).with_name("grounding_cases.json")
 
 
 def load_data():
@@ -97,6 +97,7 @@ async def evaluate(args):
                 _env_file=None,
                 documents_path=str(root / "pdf"),
                 index_lock_path=str(root / "locks"),
+                lexical_index_path=str(root / "lexical"),
                 ollama_url=args.ollama_url,
                 ollama_model=args.model,
                 embedding_model=args.embedding_model,

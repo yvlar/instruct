@@ -85,6 +85,10 @@ class Passage:
     page: int
     text: str
     score: float
+    passage_id: str
+    revision: str
+    fingerprint: str
+    excerpt: str
 
     def model_data(self) -> dict:
         # Document/page are resolved only by the backend, never by the model.
@@ -115,16 +119,27 @@ def prepare_passages(hits, question: str, config) -> list[Passage]:
             or not math.isfinite(hit.score)
         ):
             return []
+        excerpt = text
         text = normalize(text)
         if suspicious_instruction(text) or suspicious_instruction(document):
             return []
         # Do not cut a passage: a lost qualifier can invert a procedure's meaning.
         if len(text) > config.max_passage_chars:
-            continue
+            break
         source_id = "p_" + digest([str(hit.id), document, page, text])[:24]
         if source_id in seen:
             continue
-        passage = Passage(source_id, document, page, text, round(hit.score, 3))
+        passage = Passage(
+            source_id,
+            document,
+            page,
+            text,
+            round(hit.score, 6),
+            str(hit.id),
+            payload.get("revision", ""),
+            payload.get("fingerprint", ""),
+            excerpt,
+        )
         proposed = [*passages, passage]
         # UTF-8 bytes are a deliberately pessimistic token budget for Qwen's
         # byte-level tokenizer; reserve space for the chat template and output.
@@ -139,7 +154,7 @@ def prepare_passages(hits, question: str, config) -> list[Passage]:
             characters + len(text) > config.max_context_chars
             or prompt_bound > config.ollama_num_ctx
         ):
-            continue
+            break
         passages.append(passage)
         seen.add(source_id)
         characters += len(text)
@@ -199,10 +214,13 @@ def verified_answer(envelope: dict, passages: list[Passage], config) -> dict:
             )
             sources[item.source_id] = {
                 "source_id": passage.source_id,
+                "passage_id": passage.passage_id,
                 "document": passage.document,
                 "page": passage.page,
-                "excerpt": passage.text,
+                "excerpt": passage.excerpt,
                 "score": passage.score,
+                "revision": passage.revision,
+                "fingerprint": passage.fingerprint,
             }
         labels = {key: index for index, key in enumerate(sources, 1)}
         answer = "\n\n".join(

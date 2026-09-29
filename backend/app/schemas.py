@@ -7,10 +7,13 @@ class Question(BaseModel):
 
 class Source(BaseModel):
     source_id: str
+    passage_id: str
     document: str
     page: int
     excerpt: str
     score: float
+    revision: str
+    fingerprint: str
 
 
 class Claim(BaseModel):

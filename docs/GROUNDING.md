@@ -23,7 +23,8 @@ L'identifiant est `p_` suivi de 24 caractères du SHA-256 de l'identifiant Qdran
 du chemin relatif, de la page et du texte normalisé. Il est indépendant du rang
 vectoriel et change avec la révision du passage. Les numéros `[1]`, `[2]` servent
 seulement à l'affichage dans une réponse; ils ne sont pas les identifiants stables.
-Aucune réindexation n'est nécessaire pour ce changement.
+Les citations seules n’imposent aucune réindexation supplémentaire; la migration
+vers le schéma 3 de la recherche hybride reste nécessaire pour les anciens index.
 
 ## Validation avant affichage
 
@@ -61,7 +62,7 @@ d'information documentaire.
 ## API et interface
 
 Les champs historiques `answer`, `grounded`, `sources`, `document`, `page`,
-`excerpt`, `score` sont conservés. S'ajoutent `claims: [{text, source_ids}]`,
+`excerpt`, `score`, `passage_id`, `revision` et `fingerprint` sont conservés. S'ajoutent `claims: [{text, source_ids}]`,
 `sources[].source_id` et `safety_notice`. `answer` est assemblé par le backend à
 partir des extraits validés et des numéros de citation. Le frontend affiche
 `claims`, avec un lien par élément vers le passage concerné. Plusieurs extraits
@@ -73,7 +74,7 @@ Tous les textes sont affichés comme texte React; aucun HTML, Markdown actif,
 lien fourni par le modèle ou texte `thinking` n'est exécuté ou rendu comme contenu.
 Les ancres sont construites avec les identifiants générés côté serveur.
 
-Le score est présenté comme **similarité de recherche**, sans pourcentage.
+Le score est présenté comme **classement hybride RRF**, sans pourcentage.
 Il ne constitue ni une probabilité de vérité, ni une confiance calibrée.
 Le rappel officiel provient d'une constante backend et reste visible même lors
 d'un refus; il ne dépend pas de l'obéissance du modèle.
@@ -108,7 +109,7 @@ aide de recherche documentaire, jamais une autorité de sécurité industrielle.
 
 | Réglage | Défaut | Effet |
 |---|---:|---|
-| `TOP_K` | 6 | Candidats Qdrant, maximum configurable 20 |
+| `TOP_K` | 4 | Passages retenus après fusion, maximum configurable 20 |
 | `MAX_CONTEXT_CHARS` | 3200 | Plafond cumulé du texte des passages |
 | `MAX_PASSAGE_CHARS` | 1400 | Plafond d'un passage; un passage trop long est omis entier |
 | `OLLAMA_NUM_CTX` | 4096 | Fenêtre de contexte Ollama en tokens |
@@ -146,7 +147,7 @@ peuvent en économiser. Utiliser le banc local ci-dessous pour observer le résu
 
 ## Régression sur PDF de démonstration
 
-`backend/evaluation/cases.json` contient uniquement des textes originaux,
+`backend/evaluation/grounding_cases.json` contient uniquement des textes originaux,
 synthétiques et non confidentiels : cartes de couleur et bacs de rangement.
 Sept cas couvrent réponse présente simple/multiple, absente proche/hors sujet,
 contradiction ambiguë, condition/négation et injection. Le générateur crée de
@@ -189,3 +190,18 @@ modèles, quantifications et services. Séparer démarrage à froid et passages 
 chaud, relever plusieurs exécutions et observer les pics avec `nvidia-smi`.
 La sémantique de `grounded` avant ce changement n'est pas comparable : vérifier
 manuellement chaque citation et consigner les faux refus/fausses réponses.
+
+## Intégration avec la recherche hybride et la régression RAG
+
+La recherche conserve les ancres exactes, FTS5, RRF et les passages structurés de
+`main`. `CONTEXT_MAX_CHARS` borne la présélection sérialisée; `MAX_CONTEXT_CHARS`
+et le budget UTF-8 bornent ensuite le texte effectivement envoyé. À la première
+limite, la sélection s'arrête : un candidat exact trop long n'est pas remplacé
+par un voisin plus court. `excerpt` conserve les sauts de ligne et blocs originaux.
+
+`passage_id` reste l'UUID Qdrant utilisable par les clients; `source_id` est la
+référence des citations. Les révisions sont recontrôlées après génération : un
+document modifié ou retiré entre-temps fait refuser la réponse. L'avertissement
+sur l'absence de priorité entre plusieurs documents est conservé dans
+`safety_notice`. Les deux jeux de régression sont préservés sous des noms distincts :
+`cases.json` pour les PDF ORION et `grounding_cases.json` pour les cartes/bacs.

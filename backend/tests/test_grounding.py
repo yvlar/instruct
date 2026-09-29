@@ -53,6 +53,7 @@ def env(tmp_path):
         _env_file=None,
         documents_path=str(tmp_path / "docs"),
         index_lock_path=str(tmp_path / "locks"),
+        lexical_index_path=str(tmp_path / "lexical"),
     )
     files = FakeFiles()
     files.files = {
@@ -269,6 +270,7 @@ def test_only_used_sources_are_exposed(env):
     assert len(result["sources"]) == 1
     assert "inutilise.pdf" not in json.dumps(result)
     assert "rouges" not in json.dumps(result)
+    assert "Aucune priorité de version" in result["safety_notice"]
 
 
 @pytest.mark.parametrize(
@@ -456,3 +458,10 @@ def test_repeated_citation_is_deduplicated_in_sources(env):
     result = ask(env)
     assert len(result["sources"]) == 1 and len(result["claims"]) == 2
     assert result["answer"].count("[1]") == 2
+
+
+def test_top_ranked_exact_passage_cannot_be_skipped_for_a_short_neighbour(env):
+    retrieved = hits()
+    retrieved[0].payload["text"] = "Une longue consigne exacte. " * 10
+    env.config.max_passage_chars = 100
+    assert prepare_passages(retrieved, "Question?", env.config) == []

@@ -5,6 +5,7 @@ import fitz
 import httpx
 from qdrant_client import QdrantClient, models
 
+from .answering import VERSION_WARNING
 from .config import settings
 from .grounding import (
     SYSTEM_PROMPT,
@@ -26,6 +27,8 @@ from .indexing import (
     index_lock,
     require_completed,
 )
+from .lexical import LexicalIndex
+from .retrieval import Passage, fuse, select_context
 
 
 class KnowledgeBase:
@@ -54,6 +57,10 @@ class KnowledgeBase:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=120)
         return self._http
+
+    @property
+    def lexical(self):
+        return LexicalIndex(self.settings)
 
     @property
     def store(self):
@@ -145,6 +152,10 @@ class KnowledgeBase:
             )
         except Exception as exc:
             raise DocumentError("QDRANT_WRITE_FAILED") from exc
+        try:
+            self.lexical.upsert(points)
+        except Exception as exc:
+            raise DocumentError("LEXICAL_WRITE_FAILED") from exc
 
     async def stage_document(self, document, file_hash, fingerprint, revision, size):
         batch = []
@@ -180,6 +191,7 @@ class KnowledgeBase:
                     "EMPTY_DOCUMENTS: index conservé. Pour une suppression totale volontaire, "
                     "utilisez POST /api/ingest?allow_empty=true."
                 )
+            self.lexical.repair(self.qdrant, self.settings.qdrant_collection, manifests)
             result = dict(
                 documents=len(inventory),
                 chunks=0,
@@ -269,25 +281,59 @@ class KnowledgeBase:
                 _, committed = self.store.read()
                 try:
                     self.store.collect_garbage(committed)
+                    self.lexical.collect_garbage(committed)
                 except Exception:
                     result["cleanup_pending"] = True
             return result
 
-    async def ask(self, question: str) -> dict:
+    async def retrieve(self, question: str, *, semantic_only=False) -> list[Passage]:
         with index_lock(self.settings, shared=True):
             control, manifests = self.store.read()
-            hits = []
-            if manifests:
-                self.check_identity(control, await self.embedding_identity())
-                hits = self.qdrant.query_points(
-                    self.settings.qdrant_collection,
-                    query=await self.embed(question),
-                    query_filter=active_filter(manifests),
-                    limit=self.settings.top_k,
-                    score_threshold=self.settings.min_score,
-                    with_payload=True,
-                ).points
-        passages = prepare_passages(hits, question, self.settings)
+            if not manifests:
+                return []
+            self.check_identity(control, await self.embedding_identity())
+            self.lexical.require_ready(manifests)
+            hits = self.qdrant.query_points(
+                self.settings.qdrant_collection,
+                query=await self.embed(question),
+                query_filter=active_filter(manifests),
+                limit=self.settings.top_k
+                if semantic_only
+                else self.settings.retrieval_candidates,
+                score_threshold=self.settings.min_score,
+                with_payload=True,
+            ).points
+            semantic = [
+                Passage.from_point(hit)
+                for hit in sorted(
+                    hits, key=lambda h: (-getattr(h, "score", 0), str(h.id))
+                )
+            ]
+            if semantic_only:
+                return semantic
+            rows = self.lexical.search(
+                question, manifests, self.settings.retrieval_candidates
+            )
+            lexical = [
+                Passage(
+                    row["id"],
+                    row["document"],
+                    row["revision"],
+                    row["fingerprint"],
+                    row["page"],
+                    row["text"],
+                )
+                for row in rows
+            ]
+            return fuse(question, semantic, lexical)
+
+    async def ask(self, question: str) -> dict:
+        candidates = select_context(
+            await self.retrieve(question),
+            max_passages=self.settings.top_k,
+            max_chars=self.settings.context_max_chars,
+        )
+        passages = prepare_passages(candidates, question, self.settings)
         if not passages:
             return refusal()
         output_schema = GeneratedAnswer.model_json_schema()
@@ -317,7 +363,21 @@ class KnowledgeBase:
             envelope = response.json()
         except ValueError:
             return refusal()
-        return verified_answer(envelope, passages, self.settings)
+        result = verified_answer(envelope, passages, self.settings)
+        if not result["grounded"]:
+            return result
+        if len({p.document for p in passages}) > 1:
+            result["safety_notice"] += " " + VERSION_WARNING
+        # A cited revision may have been removed/replaced during local generation.
+        with index_lock(self.settings, shared=True):
+            _, current = self.store.read()
+            if any(
+                current.get(source["document"], {}).get("revision")
+                != source["revision"]
+                for source in result["sources"]
+            ):
+                return refusal()
+        return result
 
 
 knowledge_base = KnowledgeBase()

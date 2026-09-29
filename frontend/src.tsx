@@ -65,8 +65,8 @@ function App() {
             <strong>[{index + 1}] {source.document}</strong>
             <span>Page {source.page}</span>
             <blockquote>{source.excerpt}</blockquote>
-            <details><summary>Similarité de recherche : {source.score.toFixed(3)}</summary>
-              <p>Ce score compare les vecteurs de la question et du passage. Ce n’est ni une probabilité de vérité, ni une validation de la réponse.</p>
+            <details><summary>Score de classement hybride : {source.score.toFixed(3)}</summary>
+              <p>Ce score combine les classements des recherches sémantique et lexicale. Ce n’est ni une probabilité de vérité, ni une validation de la réponse.</p>
             </details>
           </article>)}</div>
         </>}

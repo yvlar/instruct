@@ -4,7 +4,7 @@
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
 
-Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de produire une réponse accompagnée du document, de la page et de l'extrait source.
+Assistant RAG local pour interroger des instructions de travail au format PDF. Instruct IA extrait le texte, recherche les passages pertinents dans Qdrant, puis demande à Qwen de sélectionner ceux qui répondent à la question. Le serveur affiche ces extraits avec leurs références vérifiées.
 
 > [!WARNING]
 > Ce projet aide à retrouver de l'information. Il ne remplace jamais une procédure officielle à jour, une formation, une analyse de risques, une consignation ou le jugement d'une personne qualifiée. Ne prenez aucune décision de sécurité uniquement à partir d'une réponse générée.
@@ -15,7 +15,7 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - synchronisation incrémentale des PDF texte : ajout, modification et suppression;
 - fichiers inchangés ignorés, embeddings par lots et reprise après interruption;
 - embeddings locaux avec `nomic-embed-text`;
-- recherche vectorielle avec Qdrant;
+- recherche hybride locale : Qdrant sémantique et SQLite FTS5 pour les termes exacts;
 - génération avec Qwen via Ollama;
 - réponses extractives avec citations par élément, document, page et passage vérifiés;
 - refus prudent si les passages sont jugés insuffisants, ambigus ou si les citations sont invalides;
@@ -33,6 +33,11 @@ Question -> embedding -> recherche sémantique ------+
 ```
 
 La description détaillée se trouve dans [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Les [tests de régression RAG et l'évaluation locale facultative](docs/RAG_REGRESSION.md)
+couvrent les citations, refus, valeurs exactes, PDF invalides et synchronisations.
+`grounded: true` atteste la provenance des extraits affichés, pas leur pertinence
+ni l'exactitude métier du document.
 
 ## Prérequis
 
@@ -136,14 +141,14 @@ pour vider un index dont le dossier source est vide.
 ### Migrer un index existant ou changer de modèle d'embeddings
 
 Les anciens points ne contiennent que le nom du fichier; il est impossible de
-retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste v2
+retrouver sans ambiguïté les sous-dossiers. Un index non vide sans manifeste compatible
 produit `LEGACY_INDEX`; il n'est ni supprimé ni interrogé par la nouvelle version.
 La reconstruction dans une **nouvelle collection** est obligatoire :
 
 1. Conservez une sauvegarde des PDF et de Qdrant; arrêtez le backend avec
    `docker compose stop backend`.
 2. Dans `.env`, remplacez `QDRANT_COLLECTION=work_instructions` par un nom encore
-   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_v2`.
+   inutilisé, par exemple `QDRANT_COLLECTION=work_instructions_hybrid_v3`.
 3. Exécutez `docker compose up -d --build backend` puis l'appel `/api/ingest`.
 4. Vérifiez `failed: 0`, `cleanup_pending: false`, puis une question avec ses sources.
    Relancez l'ingestion et vérifiez `unchanged` et `chunks: 0`.
@@ -184,6 +189,22 @@ en cas de refus. L'interface affiche les liens de citation par élément.
 sémantique.** Un passage authentique peut être incomplet ou mal interprété.
 Consultez [le contrat, les limites et le banc de régression](docs/GROUNDING.md).
 
+## Recherche hybride et migration
+
+La recherche combine les embeddings Qdrant et SQLite FTS5 pour retrouver aussi
+les codes exacts, nombres et unités. Les passages conservent les titres, étapes
+et pages; le contexte est borné. Les références et extraits cités sont validés
+avant de retourner les sources utilisées. `grounded` indique une provenance
+validée, pas une garantie d'exactitude. Le score de recherche n'est pas une
+probabilité.
+
+**Le schéma 3 exige de reconstruire les index v2 dans une nouvelle collection.**
+Les anciens index sont conservés et refusés explicitement jusqu'à cette migration.
+Les modalités de synchronisation et de suppression volontaire restent identiques.
+
+Voir [recherche hybride](docs/HYBRID_RETRIEVAL.md) pour les réglages, la migration,
+les limites, le benchmark reproductible et les mesures réellement obtenues.
+
 ## Configuration
 
 Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
@@ -198,7 +219,10 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `CHUNK_OVERLAP` | `250` | Chevauchement, inférieur à `CHUNK_SIZE` |
 | `INDEX_LOCK_PATH` | `/tmp/instruct-locks` | Verrous locaux; Compose impose le volume partagé `/state/locks` |
 | `MIN_SCORE` | `0.35` | Seuil de similarité vectorielle, sans valeur de probabilité de vérité |
-| `TOP_K` | `6` | Nombre maximal de passages récupérés |
+| `TOP_K` | `4` | Nombre maximal de passages retenus |
+| `RETRIEVAL_CANDIDATES` | `24` | Candidats par méthode avant fusion |
+| `CONTEXT_MAX_CHARS` | `8000` | Budget de présélection sérialisée, avant les limites de génération |
+| `LEXICAL_INDEX_PATH` | `./data/lexical` | Index SQLite local; Compose utilise `/state/lexical` |
 | `MAX_CONTEXT_CHARS` | `3200` | Plafond du texte fourni au modèle; budget UTF-8 conservateur supplémentaire |
 | `MAX_PASSAGE_CHARS` | `1400` | Passage entier maximum; les passages trop longs sont omis |
 | `MAX_ANSWER_CHARS` | `1600` | Longueur cumulée maximale des extraits sélectionnés |
