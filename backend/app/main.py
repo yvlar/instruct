@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 from contextlib import asynccontextmanager
 
@@ -7,13 +8,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import settings
-from .documents import Documents
-from .indexing import IndexErrorBase
-from .grounding import refusal
 from .document_manager import DocumentManager
 from .document_storage import DocumentProblem
+from .documents import Documents
+from .grounding import refusal
+from .indexing import IndexErrorBase
 from .library import register_library
-import asyncio
+from .ollama import ResponseProblem
 from .schemas import Answer, IngestionResult, Question
 from .security import SecurityStore, maintenance_lock
 from .services import KnowledgeBase
@@ -181,6 +182,15 @@ def create_app(config=None, *, kb=None):
         return user
 
     register_library(app, knowledge_base, admin)
+
+    @app.exception_handler(ResponseProblem)
+    async def response_error(_, exc):
+        return JSONResponse({"detail": str(exc), "code": exc.code}, exc.status)
+
+    @app.get("/api/response-modes")
+    async def response_modes(_=Depends(current)):
+        capability = await knowledge_base.ollama.capabilities()
+        return {"default": "fast", "modes": capability.public()}
 
     @app.exception_handler(DocumentProblem)
     async def document_error(_, exc):
@@ -457,12 +467,19 @@ def create_app(config=None, *, kb=None):
 
     @app.post("/api/ask", response_model=Answer)
     async def ask(payload: Question, request: Request, user=Depends(current)):
+        def rendered(result):
+            return {
+                **result,
+                "mode": payload.mode,
+                "kind": "search" if payload.mode == "search" else "answer",
+            }
+
         def authorized():
             return documents.searchable(current(request))
 
         try:
             result = await knowledge_base.ask(
-                payload.question, authorized_documents=authorized
+                payload.question, mode=payload.mode, authorized_documents=authorized
             )
             allowed = authorized()
             if any(
@@ -470,14 +487,14 @@ def create_app(config=None, *, kb=None):
                 or s.get("revision") != allowed[s["document"]]
                 for s in result["sources"]
             ):
-                return refusal()
+                return rendered(refusal())
             by_path = {d["path"]: d for d in documents.list(current(request))}
             if any(
                 source["document"] not in by_path
                 or source.get("revision") != by_path[source["document"]]["revision"]
                 for source in result["sources"]
             ):
-                return refusal()
+                return rendered(refusal())
             for source in result["sources"]:
                 doc = by_path[source["document"]]
                 source["document_id"] = doc["id"]
@@ -485,8 +502,8 @@ def create_app(config=None, *, kb=None):
                 source["url"] = (
                     f"/api/documents/{doc['id']}/file?version={doc['indexed_hash']}#page={source['page']}"
                 )
-            return result
-        except (HTTPException, IndexErrorBase, DocumentProblem):
+            return rendered(result)
+        except (HTTPException, IndexErrorBase, DocumentProblem, ResponseProblem):
             raise
         except Exception as exc:
             raise HTTPException(

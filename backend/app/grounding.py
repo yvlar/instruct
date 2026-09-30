@@ -102,7 +102,9 @@ def model_message(question: str, passages: list[Passage]) -> str:
     )
 
 
-def prepare_passages(hits, question: str, config) -> list[Passage]:
+def prepare_passages(
+    hits, question: str, config, *, generation_budget=None
+) -> list[Passage]:
     passages = []
     characters = 0
     seen = set()
@@ -148,7 +150,11 @@ def prepare_passages(hits, question: str, config) -> list[Passage]:
             len(SYSTEM_PROMPT.encode())
             + len(model_message(question, proposed).encode())
             + 256
-            + config.ollama_num_predict
+            + (
+                config.ollama_num_predict
+                if generation_budget is None
+                else generation_budget
+            )
         )
         if (
             characters + len(text) > config.max_context_chars

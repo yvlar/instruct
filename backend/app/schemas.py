@@ -1,8 +1,13 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+ResponseMode = Literal["fast", "reflection", "search"]
 
 
 class Question(BaseModel):
     question: str = Field(min_length=3, max_length=1000)
+    mode: ResponseMode = "fast"
 
 
 class Source(BaseModel):
@@ -25,6 +30,8 @@ class Claim(BaseModel):
 
 
 class Answer(BaseModel):
+    mode: ResponseMode = "fast"
+    kind: Literal["answer", "search"] = "answer"
     answer: str
     sources: list[Source]
     grounded: bool

@@ -1,3 +1,4 @@
+import asyncio
 import math
 import uuid
 from contextlib import nullcontext
@@ -10,9 +11,6 @@ from .answering import VERSION_WARNING
 from .config import settings
 from .document_storage import ManagedPdfSource
 from .grounding import (
-    SYSTEM_PROMPT,
-    GeneratedAnswer,
-    model_message,
     prepare_passages,
     refusal,
     verified_answer,
@@ -30,6 +28,7 @@ from .indexing import (
     require_completed,
 )
 from .lexical import LexicalIndex
+from .ollama import OllamaAdapter, ResponseProblem
 from .retrieval import Passage, fuse, select_context
 
 
@@ -38,6 +37,7 @@ class KnowledgeBase:
         self.settings = config or settings
         self._qdrant = qdrant
         self._http = http
+        self.ollama = OllamaAdapter(self.settings, lambda: self.http)
         self.source = source if source is not None else ManagedPdfSource(self.settings)
 
     @property
@@ -85,6 +85,7 @@ class KnowledgeBase:
                 "model": self.settings.embedding_model,
                 "input": texts,
                 "truncate": False,
+                "keep_alive": self.settings.ollama_keep_alive_seconds,
             },
         )
         response.raise_for_status()
@@ -426,7 +427,24 @@ class KnowledgeBase:
             ]
             return fuse(question, semantic, lexical)
 
-    async def ask(self, question: str, *, authorized_documents=None) -> dict:
+    async def ask(
+        self, question: str, *, mode="fast", authorized_documents=None
+    ) -> dict:
+        try:
+            async with asyncio.timeout(self.settings.ask_timeout_seconds):
+                async with self.ollama.admission():
+                    capability = await self.ollama.require(mode)
+                    return await self._ask(
+                        question, mode, capability, authorized_documents
+                    )
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            raise ResponseProblem(
+                "REQUEST_TIMEOUT",
+                "Délai maximal dépassé. Aucune réponse complète disponible.",
+                504,
+            ) from exc
+
+    async def _ask(self, question, mode, capability, authorized_documents):
         candidates = select_context(
             await self.retrieve(question, authorized_documents=authorized_documents),
             max_passages=self.settings.top_k,
@@ -441,45 +459,47 @@ class KnowledgeBase:
         if authorized_documents is not None:
             allowed = authorized_documents()
             candidates = [p for p in candidates if permitted_passage(p)]
-        passages = prepare_passages(candidates, question, self.settings)
+        if mode == "search":
+            result = refusal()
+            result["answer"] = ""
+            result["safety_notice"] = (
+                "Résultats documentaires non validés par le modèle. Vérifiez les passages et leur contexte."
+            )
+            result["sources"] = [
+                {
+                    "source_id": "p_" + digest([p.id, p.document, p.page, p.text])[:24],
+                    "passage_id": p.id,
+                    "document": p.document,
+                    "page": p.page,
+                    "excerpt": p.text,
+                    "score": round(p.score, 6),
+                    "revision": p.revision,
+                    "fingerprint": p.fingerprint,
+                }
+                for p in candidates
+            ]
+            return self._current_sources(result)
+        passages = prepare_passages(
+            candidates,
+            question,
+            self.settings,
+            generation_budget=self.ollama.budget(mode),
+        )
         if not passages:
             return refusal()
-        output_schema = GeneratedAnswer.model_json_schema()
-        output_schema["$defs"]["Selection"]["properties"]["source_id"]["enum"] = [
-            passage.source_id for passage in passages
-        ]
-        response = await self.http.post(
-            f"{self.settings.ollama_url}/api/chat",
-            json={
-                "model": self.settings.ollama_model,
-                "stream": False,
-                "think": False,
-                "format": output_schema,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": model_message(question, passages)},
-                ],
-                "options": {
-                    "temperature": 0,
-                    "num_ctx": self.settings.ollama_num_ctx,
-                    "num_predict": self.settings.ollama_num_predict,
-                },
-            },
-        )
-        response.raise_for_status()
+        envelope = await self.ollama.generate(question, passages, mode, capability)
         if authorized_documents is not None:
             allowed = authorized_documents()
             if any(not permitted_passage(p) for p in passages):
                 return refusal()
-        try:
-            envelope = response.json()
-        except ValueError:
-            return refusal()
         result = verified_answer(envelope, passages, self.settings)
         if not result["grounded"]:
             return result
         if len({p.document for p in passages}) > 1:
             result["safety_notice"] += " " + VERSION_WARNING
+        return self._current_sources(result)
+
+    def _current_sources(self, result):
         # A cited revision may have been removed/replaced during local generation.
         with index_lock(self.settings, shared=True):
             _, current = self.store.read()

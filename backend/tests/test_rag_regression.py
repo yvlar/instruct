@@ -13,11 +13,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from conftest import authenticated_app
 from app.config import Settings
 from app.grounding import normalize, refusal
 from app.indexing import digest
 from app.services import KnowledgeBase
+from conftest import authenticated_app
 from evaluation.build_fixtures import PRESSURE, ROOT, write_pdf
 from evaluation.checks import check_answer, load_cases
 from test_indexing import FaultyQdrant
@@ -66,6 +66,17 @@ class ControlledOllama:
                     "models": [
                         {"name": "nomic-embed-text:latest", "digest": "regression-v1"}
                     ]
+                },
+            )
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.12.3"})
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": ["completion", "thinking"],
+                    "details": {"family": "qwen3"},
+                    "template": "{{ if .Think }}<think>{{ else }}</think>{{ end }}",
                 },
             )
         body = json.loads(request.content)
@@ -169,7 +180,7 @@ def ask(rag, question="Quelle pression régler pour le banc fictif ORION?"):
 
 
 def assert_refusal(answer):
-    assert answer == refusal()
+    assert answer == {**refusal(), "mode": "fast", "kind": "answer"}
 
 
 def assert_indexed_citations(rag, answer):

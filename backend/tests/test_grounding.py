@@ -8,6 +8,7 @@ import httpx
 import pytest
 from app.config import Settings
 from app.grounding import NOT_FOUND, SAFETY_NOTICE, prepare_passages, verified_answer
+from app.ollama import ResponseProblem
 from app.schemas import Answer
 from app.services import KnowledgeBase
 from test_indexing import FakeFiles, FakeOllama, FaultyQdrant
@@ -98,7 +99,7 @@ def test_valid_citation_and_exact_api_contract(env):
     ]
     assert result["answer"] == source["excerpt"] + " [1]"
     assert "version officielle" in result["safety_notice"]
-    assert Answer.model_validate(result).model_dump() == result
+    assert Answer.model_validate(result).model_dump(exclude={"mode", "kind"}) == result
     assert len(env.ollama.chat_requests) == 1
     request = env.ollama.chat_requests[0]
     assert request["think"] is False and request["stream"] is False
@@ -284,7 +285,8 @@ def test_only_used_sources_are_exposed(env):
 )
 def test_truncated_or_unconfirmed_generation_refuses(env, finish):
     env.ollama.finish = finish
-    assert_refused(ask(env))
+    with pytest.raises(ResponseProblem, match="INCOMPLETE_GENERATION"):
+        ask(env)
 
 
 def test_output_and_context_limits(env):
@@ -385,6 +387,8 @@ def test_http_api_serialization_usable_by_frontend(env, monkeypatch, accepted):
                 "grounded",
                 "claims",
                 "safety_notice",
+                "mode",
+                "kind",
             }
             source_ids = {s["source_id"] for s in data["sources"]}
             assert all(set(c["source_ids"]) <= source_ids for c in data["claims"])

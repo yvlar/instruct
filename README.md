@@ -25,6 +25,19 @@ Assistant RAG local pour interroger des instructions de travail au format PDF. I
 - API FastAPI et interface React/TypeScript;
 - déploiement conteneurisé avec Docker Compose.
 
+## Choisir le mode de réponse
+
+Près de la question, choisissez **Rapide** (défaut), **Réflexion** ou **Recherche
+seulement**. Rapide et Réflexion utilisent les mêmes citations vérifiées; Recherche
+seulement affiche les passages avec document, page et ouverture du PDF, sans
+appeler le modèle génératif. **Approfondir** relance une recherche autorisée pour
+la question d’origine et conserve la première réponse pendant le traitement.
+Les modes incompatibles sont désactivés et expliqués, sans remplacement silencieux.
+
+Consultez [les modes, la compatibilité Ollama et les budgets](docs/RESPONSE_MODES.md).
+Le projet utilise Ollama 0.12.3; la compatibilité est vérifiée sur le modèle
+configuré. Redémarrez le backend après un changement de modèle ou de version.
+
 ## Architecture
 
 ```text
@@ -220,7 +233,8 @@ curl -X POST http://localhost:3000/api/ask \
 |---|---|---|
 | `GET` | `/healthz` | Vérifie que l'API répond |
 | `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
-| `POST` | `/api/ask` | Extraits vérifiés, claims et sources avec identifiant, version et page |
+| `GET` | `/api/response-modes` | Disponibilité et explication des modes, session requise |
+| `POST` | `/api/ask` | `mode: fast` (défaut), `reflection` ou `search`; réponse distinguée par `kind`, sources avec version et page |
 | `GET` | `/api/library/documents` | Liste : `q`, `status`, `page`, `page_size`, tâches récentes |
 | `PUT` | `/api/library/documents` | Corps PDF brut, `Content-Type: application/pdf`; `name`, `folder`, `replace_id` explicite |
 | `POST` | `/api/library/documents/sync` | Lance une synchronisation; réponse 202 avec la tâche |
@@ -320,11 +334,18 @@ Les réglages se trouvent dans `.env`. Ne publiez jamais ce fichier.
 | `MAX_ANSWER_CHARS` | `1600` | Longueur cumulée maximale des extraits sélectionnés |
 | `MAX_RESPONSE_CHARS` | `6000` | Taille maximale du JSON accepté |
 | `OLLAMA_NUM_CTX` | `4096` | Fenêtre de contexte en tokens |
-| `OLLAMA_NUM_PREDICT` | `768` | Tokens de sortie maximum, JSON compris |
+| `OLLAMA_NUM_PREDICT` | `768` | Budget de génération Rapide, JSON compris |
+| `OLLAMA_REFLECTION_NUM_PREDICT` | `1536` | Budget Réflexion : raisonnement + JSON final |
+| `OLLAMA_THINK_SUPPORT` | `auto` | Détection; `boolean`/`none` seulement après vérification explicite documentée |
+| `OLLAMA_KEEP_ALIVE_SECONDS` | `120` | Maintien en mémoire après embeddings/génération |
+| `ASK_TIMEOUT_SECONDS` | `180` | Délai global (240 s maximum) |
+| `ASK_CONCURRENCY` / `ASK_QUEUE_SIZE` | `1` / `2` | Questions actives / en attente |
+| `ASK_QUEUE_TIMEOUT_SECONDS` | `15` | Attente maximale d’une place |
+| `OLLAMA_NUM_PARALLEL` / `OLLAMA_MAX_LOADED_MODELS` / `OLLAMA_MAX_QUEUE` | `1` / `1` / `2` | Limites du service Ollama transmises par Compose |
 
 ## Confidentialité et sécurité
 
-En configuration par défaut, les traitements restent sur la machine locale. Les ports sont liés à `127.0.0.1` et ne doivent pas être exposés directement sur Internet. L'application ne possède ni authentification ni gestion multiutilisateur.
+En configuration par défaut, les traitements restent sur la machine locale. Les ports sont liés à `127.0.0.1` et ne doivent pas être exposés directement sur Internet. Les comptes locaux et les groupes limitent l’accès aux documents, dans tous les modes de réponse. Voir [l’exploitation PME](docs/PME.md).
 
 Avant toute publication :
 
@@ -346,7 +367,7 @@ Avant toute publication :
   principalement à une page, plus un lot de vecteurs;
 - index et filtres de recherche gardent les métadonnées des documents en mémoire;
   cette approche vise un corpus local, pas des millions de documents;
-- aucun contrôle d'accès;
+- aucun cache de réponse; la détection des capacités du modèle nécessite un redémarrage après modification;
 - pas conçu ni certifié comme système de sécurité industrielle.
 
 ## Tests

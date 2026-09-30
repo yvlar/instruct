@@ -10,15 +10,14 @@ from types import SimpleNamespace
 import fitz
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-from qdrant_client import QdrantClient
-
 from app.backup import backup, restore
 from app.config import Settings
 from app.indexing import document_id
 from app.main import create_app
 from app.security import maintenance_lock
 from app.services import KnowledgeBase
+from fastapi.testclient import TestClient
+from qdrant_client import QdrantClient
 from test_indexing import FakeOllama, FaultyQdrant
 
 PASSWORD = "Synthetic-password-123"
@@ -288,10 +287,13 @@ def test_roles_manager_scope_and_last_admin(secured):
         )
 
 
-def test_revocation_invalidates_old_citations_and_drops_inflight_answer(secured):
+@pytest.mark.parametrize("mode", ["fast", "reflection"])
+def test_revocation_invalidates_old_citations_and_drops_inflight_answer(secured, mode):
     e = secured
     client = e.login("alice")
-    response = client.post("/api/ask", json={"question": "Quelle pression?"}).json()
+    response = client.post(
+        "/api/ask", json={"question": "Quelle pression?", "mode": mode}
+    ).json()
     url = response["sources"][0]["url"]
     access_before = client.get("/api/auth/session").json()["access_version"]
     assert (
@@ -303,9 +305,9 @@ def test_revocation_invalidates_old_citations_and_drops_inflight_answer(secured)
     assert client.get("/api/auth/session").json()["access_version"] > access_before
     assert client.get(url).status_code == 404
     assert client.get(f"/api/documents/{e.a}/versions").status_code == 404
-    assert not client.post("/api/ask", json={"question": "Quelle pression?"}).json()[
-        "grounded"
-    ]
+    assert not client.post(
+        "/api/ask", json={"question": "Quelle pression?", "mode": mode}
+    ).json()["grounded"]
     assert (
         e.admin.put(
             f"/api/admin/documents/{e.a}/groups", json={"groups": [e.ga]}
@@ -322,7 +324,9 @@ def test_revocation_invalidates_old_citations_and_drops_inflight_answer(secured)
         return response
 
     e.kb._http = httpx.AsyncClient(transport=httpx.MockTransport(revoke))
-    result = client.post("/api/ask", json={"question": "Quelle pression?"}).json()
+    result = client.post(
+        "/api/ask", json={"question": "Quelle pression?", "mode": mode}
+    ).json()
     assert (
         not result["grounded"]
         and result["sources"] == []
@@ -330,7 +334,8 @@ def test_revocation_invalidates_old_citations_and_drops_inflight_answer(secured)
     )
 
 
-def test_revoke_during_embedding_never_sends_context(secured):
+@pytest.mark.parametrize("mode", ["fast", "reflection", "search"])
+def test_revoke_during_embedding_never_sends_context(secured, mode):
     e = secured
     client = e.login("alice")
 
@@ -339,9 +344,9 @@ def test_revoke_during_embedding_never_sends_context(secured):
             db.execute("DELETE FROM document_groups WHERE document_id=?", (e.a,))
 
     e.ollama.on_embed = revoke
-    assert not client.post("/api/ask", json={"question": "Quelle pression?"}).json()[
-        "grounded"
-    ]
+    assert not client.post(
+        "/api/ask", json={"question": "Quelle pression?", "mode": mode}
+    ).json()["grounded"]
     assert not e.ollama.chat_requests
 
 
@@ -666,8 +671,9 @@ def test_lexical_only_retrieval_excludes_other_group(secured, monkeypatch):
 def test_advanced_worker_rechecks_revoked_session_and_never_persists_token(secured):
     e = secured
     manager = e.app.state.library
-    from itsdangerous import TimestampSigner
     import base64
+
+    from itsdangerous import TimestampSigner
 
     raw = TimestampSigner(e.store.secret).unsign(
         e.admin.cookies.get("instruct_session")

@@ -1,7 +1,10 @@
 // Synthetic installation created AND restored by backend/tests/browser_demo.py.
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? {
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  args: ['--no-sandbox', '--disable-dev-shm-usage'],
+} : {});
 const context = await browser.newContext();
 context.setDefaultTimeout(20000);
 context.setDefaultNavigationTimeout(20000);
