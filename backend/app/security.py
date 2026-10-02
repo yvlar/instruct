@@ -194,6 +194,7 @@ class SecurityStore:
         now = time.time()
         # Reserve a slot before Argon2, including concurrent requests and unknown users.
         limited = False
+        reservations = []
         with self.transaction() as db:
             db.execute("DELETE FROM attempts WHERE started<?", (now - 900,))
             db.execute("DELETE FROM sessions WHERE expires<=?", (now,))
@@ -203,7 +204,7 @@ class SecurityStore:
             ):
                 hashed = token_hash(key)
                 row = db.execute(
-                    "SELECT count FROM attempts WHERE key=?", (hashed,)
+                    "SELECT count, started FROM attempts WHERE key=?", (hashed,)
                 ).fetchone()
                 if row and row[0] >= limit:
                     limited = True
@@ -212,6 +213,7 @@ class SecurityStore:
                     "DO UPDATE SET count=count+1",
                     (hashed, now),
                 )
+                reservations.append((hashed, row["started"] if row else now))
             if limited:
                 self.event(db, None, "login", "session", "rate_limited")
         if limited:
@@ -256,6 +258,13 @@ class SecurityStore:
                         (PASSWORDS.hash(password), row["id"]),
                     )
                 self.event(db, row["id"], "login", "session")
+                # Release only this successful attempt, never other failures or
+                # in-flight requests. An expired/replaced window is not ours.
+                db.executemany(
+                    "UPDATE attempts SET count=count-1 "
+                    "WHERE key=? AND started=? AND count>0",
+                    reservations,
+                )
         if token is None:
             raise HTTPException(401, "Identifiants invalides.")
         return token
