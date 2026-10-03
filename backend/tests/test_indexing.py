@@ -62,6 +62,17 @@ class FakeOllama:
                     ]
                 },
             )
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.12.3"})
+        if request.url.path == "/api/show":
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": ["completion", "thinking"],
+                    "details": {"family": "qwen3"},
+                    "template": "{{ if .Think }}<think>{{ else }}</think>{{ end }}",
+                },
+            )
         body = json.loads(request.content)
         if request.url.path == "/api/chat":
             self.chat_requests.append(body)

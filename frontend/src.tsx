@@ -4,6 +4,14 @@ import "./styles.css";
 import { Documents as LibraryDocuments } from "./Documents";
 import "./library.css";
 import { SourcePreview, Source } from "./SourcePreview";
+import {
+  Availability,
+  initialAvailability,
+  Mode,
+  ModeSelector,
+  ResponseCard,
+  Result,
+} from "./ResponseModes";
 
 type User = {
   id: number;
@@ -22,13 +30,6 @@ type Doc = {
   groups: number[];
   current_hash: string;
   indexed_at: string | null;
-};
-type Result = {
-  answer: string;
-  grounded: boolean;
-  claims: { text: string; source_ids: string[] }[];
-  safety_notice: string;
-  sources: (Source & { url: string })[];
 };
 type Session = { user: User | null; csrf: string; access_version: number };
 type API = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
@@ -88,6 +89,13 @@ function App() {
     [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result | null>(null),
     [revision, setRevision] = useState(0);
+  const [deeper, setDeeper] = useState<Result | null>(null);
+  const [resultQuestion, setResultQuestion] = useState("");
+  const [mode, setMode] = useState<Mode>("fast");
+  const [availability, setAvailability] =
+    useState<Availability>(initialAvailability);
+  const [loadingMode, setLoadingMode] = useState<Mode | null>(null);
+  const requestInFlight = useRef(false);
   const [preview, setPreview] = useState<Source | null>(null);
   const epoch = useRef(0);
   const applySession = useCallback((next: Session) => {
@@ -97,6 +105,7 @@ function App() {
     ) {
       epoch.current++;
       setResult(null);
+      setDeeper(null);
       setPreview(null);
       setRevision((r) => r + 1);
     }
@@ -121,7 +130,8 @@ function App() {
         if (response.status === 401) {
           epoch.current++;
           setResult(null);
-      setPreview(null);
+          setDeeper(null);
+          setPreview(null);
           ref.current = ref.current ? { ...ref.current, user: null } : null;
           setSession(ref.current);
         }
@@ -176,22 +186,99 @@ function App() {
       await api("/api/auth/logout", "POST");
       epoch.current++;
       setResult(null);
+      setDeeper(null);
       setPreview(null);
       setSession(null);
       ref.current = null;
       await refresh();
     });
   }
+  useEffect(() => {
+    if (!session?.user) {
+      setAvailability(initialAvailability);
+      setMode("fast");
+      return;
+    }
+    let cancelled = false;
+    void api<{ modes: Availability }>("/api/response-modes")
+      .then((data) => {
+        if (!cancelled) setAvailability(data.modes);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setAvailability({
+            fast: {
+              available: false,
+              reason:
+                "Modèle indisponible. Rechargez la page après vérification.",
+            },
+            reflection: {
+              available: false,
+              reason:
+                "Modèle indisponible. Rechargez la page après vérification.",
+            },
+            search: { available: true, reason: "" },
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, session?.user?.id]);
+  async function submitQuestion(
+    question: string,
+    requestedMode: Mode,
+    deepen = false,
+  ) {
+    if (requestInFlight.current || !availability[requestedMode].available)
+      return;
+    requestInFlight.current = true;
+    const ticket = epoch.current;
+    setLoadingMode(requestedMode);
+    try {
+      await run(async () => {
+        if (!deepen) {
+          setResult(null);
+          setDeeper(null);
+        }
+        setPreview(null);
+        let r: Result;
+        try {
+          r = await api<Result>("/api/ask", "POST", {
+            question,
+            mode: requestedMode,
+          });
+        } catch (error) {
+          // A model may reject a previously detected mode after being replaced.
+          // Refresh cached capability state; never retry generation automatically.
+          try {
+            const data = await api<{ modes: Availability }>(
+              "/api/response-modes",
+            );
+            if (ticket === epoch.current) setAvailability(data.modes);
+          } catch {
+            /* Preserve the original request error. */
+          }
+          throw error;
+        }
+        if (ticket === epoch.current) {
+          if (deepen) setDeeper(r);
+          else {
+            setResult(r);
+            setResultQuestion(question);
+          }
+        }
+      });
+    } finally {
+      requestInFlight.current = false;
+      setLoadingMode(null);
+    }
+  }
   async function ask(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const question = new FormData(e.currentTarget).get("question");
-    const ticket = epoch.current;
-    await run(async () => {
-      setResult(null);
-      setPreview(null);
-      const r = await api<Result>("/api/ask", "POST", { question });
-      if (ticket === epoch.current) setResult(r);
-    });
+    await submitQuestion(
+      String(new FormData(e.currentTarget).get("question")),
+      mode,
+    );
   }
   const user = session?.user;
   return (
@@ -262,13 +349,25 @@ function App() {
         </section>
       ) : (
         <>
-          {preview && <div className="library"><SourcePreview source={preview} onClose={() => setPreview(null)} /></div>}
+          {preview && (
+            <div className="library">
+              <SourcePreview
+                source={preview}
+                onClose={() => setPreview(null)}
+              />
+            </div>
+          )}
           <nav aria-label="Sections">
             {[
               ["ask", "Recherche"],
               ["documents", "Documents"],
               ["account", "Mon compte"],
-              ...(user.role === "admin" ? [["admin", "Administration"], ["library", "Gestion avancée"]] : []),
+              ...(user.role === "admin"
+                ? [
+                    ["admin", "Administration"],
+                    ["library", "Gestion avancée"],
+                  ]
+                : []),
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -300,42 +399,88 @@ function App() {
                     maxLength={1000}
                     required
                   />
-                  <button disabled={busy}>
-                    {busy ? "Recherche…" : "Rechercher"}
+                  <ModeSelector
+                    value={mode}
+                    onChange={setMode}
+                    availability={availability}
+                    busy={busy || loadingMode !== null}
+                  />
+                  <button
+                    disabled={
+                      busy ||
+                      loadingMode !== null ||
+                      !availability[mode].available
+                    }
+                  >
+                    Rechercher
                   </button>
                 </form>
               </section>
+              <div role="status" aria-live="polite" className="response-status">
+                {loadingMode === "reflection"
+                  ? "Réflexion en cours…"
+                  : loadingMode === "fast"
+                    ? "Réponse en cours…"
+                    : loadingMode === "search"
+                      ? "Recherche documentaire en cours…"
+                      : ""}
+              </div>
               {result && (
-                <section className="panel result">
-                  <span className={result.grounded ? "badge" : "badge warning"}>
-                    {result.grounded
-                      ? "Réponse documentée"
-                      : "Information absente"}
-                  </span>
-                  <h3>Réponse</h3>
-                  {result.claims?.length ? <ul className="answer">{result.claims.map((claim, i) => <li key={i}>{claim.text} {claim.source_ids.map(id => <a key={id} href={`#source-${id}`}>[{id}]</a>)}</li>)}</ul> : <p className="answer">{result.answer}</p>}
-                  <p className="muted">{result.safety_notice}</p>
-                  {!!result.sources.length && (
-                    <>
-                      <h3>Sources</h3>
-                      <div className="sources">
-                        {result.sources.map((s, i) => (
-                          <article key={i} id={`source-${s.source_id}`}>
-                            <a href={s.url} target="_blank" rel="noreferrer">
-                              {s.document} — page {s.page}
-                            </a>
-                            <p>{s.excerpt}</p>
-                            <button onClick={() => setPreview(s)}>Ouvrir la source · p. {s.page}</button>
-                          </article>
-                        ))}
+                <>
+                  <ResponseCard
+                    result={result}
+                    question={resultQuestion}
+                    onPreview={setPreview}
+                  />
+                  {result.mode === "fast" &&
+                    result.kind === "answer" &&
+                    availability.reflection.available &&
+                    !deeper && (
+                      <div className="deepen-actions">
+                        <button
+                          className="secondary"
+                          disabled={busy || loadingMode !== null}
+                          onClick={() =>
+                            void submitQuestion(
+                              resultQuestion,
+                              "reflection",
+                              true,
+                            )
+                          }
+                        >
+                          Approfondir
+                        </button>
+                        <p className="muted">
+                          Relance la recherche pour cette question avec vos
+                          droits actuels, puis examine les passages en mode
+                          Réflexion.
+                        </p>
                       </div>
-                    </>
-                  )}
-                </section>
+                    )}
+                </>
+              )}
+              {deeper && (
+                <ResponseCard
+                  result={deeper}
+                  question={resultQuestion}
+                  deeper
+                  onPreview={setPreview}
+                />
               )}
             </>
           )}
-          {tab === "library" && user.role === "admin" && <div className="library"><LibraryDocuments onChange={() => { setRevision(r => r + 1); setResult(null); setPreview(null); }} /></div>}
+          {tab === "library" && user.role === "admin" && (
+            <div className="library">
+              <LibraryDocuments
+                onChange={() => {
+                  setRevision((r) => r + 1);
+                  setResult(null);
+                  setDeeper(null);
+                  setPreview(null);
+                }}
+              />
+            </div>
+          )}
           {tab === "documents" && (
             <Documents
               key={`${user.id}-${revision}`}

@@ -261,7 +261,13 @@ def test_rank_alone_does_not_make_a_generated_refusal_grounded(env):
         if request.url.path == "/api/chat":
             return httpx.Response(
                 200,
-                json={"message": {"content": json.dumps({"passage_ids": []})}},
+                json={
+                    "done": True,
+                    "done_reason": "stop",
+                    "message": {
+                        "content": json.dumps({"status": "insufficient", "answer": []})
+                    },
+                },
             )
         return env.ollama(request)
 

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,13 +24,25 @@ class Settings(BaseSettings):
     ollama_num_ctx: int = Field(default=4096, ge=2048, le=32768)
     ollama_num_predict: int = Field(default=768, ge=128, le=4096)
 
+    # OLLAMA_NUM_PREDICT remains the backwards-compatible Fast budget.
+    ollama_reflection_num_predict: int = Field(default=1536, ge=128, le=8192)
+    ollama_think_support: Literal["auto", "boolean", "none"] = "auto"
+    ollama_keep_alive_seconds: int = Field(default=120, ge=0, le=3600)
+    ask_timeout_seconds: float = Field(default=180, ge=1, le=240)
+    ask_concurrency: int = Field(default=1, ge=1, le=4)
+    ask_queue_size: int = Field(default=2, ge=0, le=16)
+    ask_queue_timeout_seconds: float = Field(default=15, ge=0.1, le=60)
+
     @model_validator(mode="after")
     def valid_chunk_overlap(self):
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("CHUNK_OVERLAP doit être inférieur à CHUNK_SIZE")
-        if self.ollama_num_predict >= self.ollama_num_ctx // 2:
+        if (
+            max(self.ollama_num_predict, self.ollama_reflection_num_predict)
+            >= self.ollama_num_ctx // 2
+        ):
             raise ValueError(
-                "OLLAMA_NUM_PREDICT doit être inférieur à la moitié de OLLAMA_NUM_CTX"
+                "Les budgets de génération doivent être inférieurs à la moitié de OLLAMA_NUM_CTX"
             )
         return self
 
@@ -41,8 +55,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def valid_network(self):
-        from urllib.parse import urlsplit
         from pathlib import Path
+        from urllib.parse import urlsplit
 
         if not self.document_state_path:
             self.document_state_path = str(Path(self.state_path) / "document-manager")
