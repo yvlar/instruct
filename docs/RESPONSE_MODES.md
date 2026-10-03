@@ -181,3 +181,108 @@ nul ou faible ne suffit pas à prouver que le modèle était entièrement en VRA
 Confirmer l’état avec `ollama ps` avant chaque essai. Avec un seul modèle chargé,
 l’embedding peut provoquer un nouveau chargement de Qwen : l’indiquer au lieu de
 classer automatiquement la deuxième question comme « chaude ».
+
+### Benchmark reproductible des trois modes
+
+Le benchmark utilise **les services locaux Ollama et Qdrant existants**, sans
+installation de modèle, et une instance API ASGI isolée avec les véritables routes,
+session, CSRF, ACL, recherche et validation des citations. Il crée deux PDF fictifs,
+un compte éphémère et une collection Qdrant au nom unique; celle-ci est supprimée
+à la fin, y compris en cas d'erreur. Il n'interroge pas vos documents ni vos comptes.
+Les fichiers temporaires sont supprimés. Un arrêt forcé peut laisser une collection
+`response_benchmark_*` à retirer manuellement. Aucun changement fonctionnel dans
+les modes de réponse; aucune nouvelle route de métriques en production.
+
+Sur la pile Compose (depuis la racine du dépôt), après installation des modèles
+locaux habituels et démarrage d'Ollama/Qdrant :
+
+```bash
+mkdir -p benchmark-results
+docker compose run --rm --no-deps \
+  -v "$PWD/backend:/benchmark:ro" \
+  -v "$PWD/benchmark-results:/results" \
+  -w /benchmark --entrypoint python backend \
+  -m benchmarks.response_modes --live \
+  --ollama-url http://ollama:11434 --qdrant-url http://qdrant:6333 \
+  --model qwen3:8b --embedding-model nomic-embed-text \
+  --repeat 2 --output /results/modes-4060.json
+```
+
+Le backend doit avoir été construit (`docker compose build backend`). Le montage
+inclut le code de benchmark, absent de l'image de production. La commande n'a pas
+besoin du frontend. Exécuter à un moment sans autre question ni indexation : le
+benchmark **décharge les modèles Ollama résidents** avant chaque essai froid, mais
+ne change ni les modèles installés, ni les paramètres persistants du service.
+Cela peut ralentir une autre application utilisant le même Ollama.
+
+Hors Docker, avec les services accessibles sur localhost :
+
+```bash
+cd backend
+python -m pip install -r requirements.txt
+python -m benchmarks.response_modes --live --repeat 2 \
+  --output modes-4060.json
+```
+
+Les paramètres sont reproductibles : contexte 4096, Rapide 768, Réflexion 1536,
+température 0, trois questions (simple, deux PDF, information absente), mêmes PDF.
+Les valeurs par défaut de `Settings` sont utilisées indépendamment du `.env` et
+les chemins de stockage sont tous temporaires. Conserver le modèle, sa version,
+Ollama 0.12.3 et les limites Compose pour comparer deux exécutions. Sur une RTX
+4060 8 Go / 32 Go RAM, conserver **un seul modèle chargé** comme prévu; ne pas
+augmenter les budgets pour ce premier relevé. Aucun résultat matériel n'est fourni
+par les tests hors ligne.
+
+Le JSON contient 27 essais avec `--repeat 2` : une requête froide suivie de deux
+répétitions pour chaque question/mode. Codes de sortie : **0** toutes les
+vérifications réussies, **1** au moins un échec de qualité ou une erreur API (le
+rapport est conservé), **2** échec de préparation/service/nettoyage. Le chemin de
+sortie doit être nouveau. Un mode indisponible reste une erreur API; aucun repli.
+
+Champs de comparaison :
+
+- `api_seconds` : durée de `POST /api/ask` à travers l'API authentifiée **en processus**,
+  sans réseau frontend/proxy; comprend les sondes de résidence. `probe_seconds`
+  isole leur coût pour l'estimation `api_seconds - probe_seconds`. Cela n'est pas
+  une mesure de latence navigateur ni une instrumentation sans coût.
+- `ollama` : pour chaque embedding/chat, durée HTTP, statut et métriques numériques
+  autorisées (`eval_count`, `prompt_eval_count`, `load_duration`, `total_duration`,
+  `eval_duration`, `prompt_eval_duration`). Durées Ollama en **nanosecondes**;
+  valeurs absentes ou invalides = `null`; aucune métrique générative inventée
+  pour Recherche seulement. Les tokens Réflexion incluent le raisonnement.
+- `resident_before`, `resident_after` et `ollama[].before` : état `/api/ps`,
+  équivalent structuré de `ollama ps`, avec taille totale et VRAM en **octets**.
+  `cold_verified: true` signifie que la liste des modèles était vide après
+  déchargement; `false` signifie que ce contrôle n'a pas pu être confirmé.
+  `warm-repeat` signifie répétition sans déchargement explicite, **pas** garantie
+  de modèle génératif chaud : consulter l'état juste avant `/api/chat` et la durée
+  de chargement. L'embedding peut remplacer Qwen à chaque question.
+- `system_before/after` : RAM Linux via `/proc/meminfo` en KiB et mémoire GPU
+  via `nvidia-smi` en MiB, si disponibles; sinon `null`. Ce sont des instantanés,
+  pas des pics ni une attribution au seul benchmark. Dans le conteneur backend,
+  `nvidia-smi` peut être absent même si Ollama utilise le GPU; lancer aussi
+  `nvidia-smi` et `ollama ps` sur l'hôte si nécessaire. Aucun outil système requis.
+- `quality` : résultat des contrôles, citations présentes dans les pages PDF,
+  `grounded`, nombre de sources/affirmations et d'appels chat. Rapide/Réflexion
+  doivent restituer les extraits attendus avec citations, ou refuser l'information
+  absente sans source/affirmation. Recherche doit rester sans réponse, sans
+  affirmation, `grounded: false` et zéro chat; les passages attendus doivent être
+  retrouvés. Une recherche sur une information absente peut retourner des passages
+  proches, ce qui est normal. Ces contrôles ne prouvent pas une qualité générale
+  du modèle sur vos documents.
+
+Seuls les identifiants de cas, statistiques, états techniques et booléens sont
+écrits. Aucun prompt, réponse, extrait, document, contenu `message.thinking`, mot de
+passe, cookie, jeton CSRF ou corps d'erreur fournisseur n'est exporté. Les erreurs
+fatales affichent un message générique. Le benchmark reçoit les corps en mémoire
+pour la validation, puis les élimine; ne pas activer de logs HTTP détaillés autour
+de cette commande. Les URLs sont limitées à localhost et aux services Compose,
+sans identifiants, query ou fragment. Aucun modèle `:cloud` n'est accepté.
+
+Tests hors ligne (API authentifiée, PDF réels, Qdrant embarqué, Ollama simulé,
+contrôle de non-divulgation, froid/chaud, nettoyage, outils absents, citations
+corrompues et `grounded` incorrect) :
+
+```bash
+(cd backend && python -m pytest -q tests/test_response_benchmark.py)
+```

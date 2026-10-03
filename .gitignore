@@ -45,3 +45,6 @@ certs/
 data/
 test-results/
 playwright-report/
+
+# Local performance reports
+benchmark-results/
