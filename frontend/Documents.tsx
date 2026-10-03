@@ -90,7 +90,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
     async function load() {
       try {
         const next = await request<Listing>(
-          `/api/documents?q=${encodeURIComponent(query)}&status=${status}&page=${page}`,
+          `/api/library/documents?q=${encodeURIComponent(query)}&status=${status}&page=${page}`,
           { signal: controller.signal },
         );
         if (!controller.signal.aborted) {
@@ -152,7 +152,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
     try {
       const params = new URLSearchParams({ name, folder });
       if (replacement) params.set("replace_id", replacement.id);
-      await request(`/api/documents?${params}`, {
+      await request(`/api/library/documents?${params}`, {
         method: "PUT",
         headers: { "Content-Type": "application/pdf" },
         body: file,
@@ -171,7 +171,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
       if (message(e).includes("Ce nom existe")) {
         try {
           const found = await request<Listing>(
-            `/api/documents?q=${encodeURIComponent(name)}&page_size=100`,
+            `/api/library/documents?q=${encodeURIComponent(name)}&page_size=100`,
           );
           setCollision(
             found.items.find(
@@ -212,7 +212,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
         <button
           className="secondary"
           disabled={disabled}
-          onClick={() => void action("/api/documents/sync")}
+          onClick={() => void action("/api/library/documents/sync")}
         >
           ↻ Synchroniser les documents
         </button>
@@ -354,7 +354,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
             <button
               className="secondary"
               disabled={disabled}
-              onClick={() => void action(`/api/document-jobs/${job.id}/retry`)}
+              onClick={() => void action(`/api/library/document-jobs/${job.id}/retry`)}
             >
               Réessayer la tâche
             </button>
@@ -495,7 +495,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
                           <button
                             disabled={disabled}
                             onClick={() =>
-                              void action(`/api/documents/${doc.id}/index`)
+                              void action(`/api/library/documents/${doc.id}/index`)
                             }
                           >
                             {doc.state === "error"
@@ -596,7 +596,7 @@ export function Documents({ onChange }: { onChange: () => void }) {
             <button
               className="danger-button"
               disabled={disabled}
-              onClick={() => void action(`/api/documents/${removal.id}/remove`)}
+              onClick={() => void action(`/api/library/documents/${removal.id}/remove`)}
             >
               Confirmer le retrait
             </button>

@@ -31,6 +31,7 @@ def test_real_pdf_and_persistent_qdrant_survive_restart(tmp_path):
         write_pdf(path, "Ancienne instruction de maintenance.")
         config = Settings(
             _env_file=None,
+            state_path=str(tmp_path / "state"),
             documents_path=str(root),
             document_state_path=str(tmp_path / "state"),
             index_lock_path=str(tmp_path / "locks"),
@@ -94,6 +95,7 @@ def test_existing_qdrant_and_ollama_http_services(tmp_path):
         write_pdf(pdf, "Une instruction synthetique pour le test d'indexation.")
         config = Settings(
             _env_file=None,
+            state_path=str(tmp_path / "state"),
             documents_path=str(root),
             document_state_path=str(tmp_path / "state"),
             qdrant_url=os.environ["INSTRUCT_TEST_QDRANT_URL"],

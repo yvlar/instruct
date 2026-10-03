@@ -1,0 +1,17 @@
+# Docker Compose >= 2.24.4. Only the HTTPS gateway is exposed on the LAN.
+services:
+  backend:
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to https://your-internal-host}
+      COOKIE_SECURE: "true"
+  frontend:
+    ports: !reset []
+  gateway:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    ports: ["${LAN_BIND_IP:?Set the server private LAN IP}:443:443"]
+    volumes:
+      - ./deploy/lan.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/instruct/certs:ro
+    depends_on: [frontend]
+    networks: [entry]

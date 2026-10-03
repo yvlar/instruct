@@ -1,421 +1,303 @@
-"""One bounded local worker; SQLite journal survives process interruption."""
+"""PDF catalogue, private immutable versions and scoped synchronizations."""
 
-import asyncio
-import json
+import hashlib
 import os
-import shutil
-import threading
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+import tempfile
+from pathlib import Path, PurePosixPath
 
 import fitz
-import portalocker
+from fastapi import HTTPException
 
-from .document_storage import (
-    DocumentProblem,
-    DocumentState,
-    file_hash,
-    now,
-    validate_path,
-)
-from .indexing import IndexErrorBase, document_id, index_lock
+from .indexing import document_id, index_lock
+from .security import utc
 
 
-class DocumentManager:
-    def __init__(self, config, factory):
+def safe_path(root, relative):
+    parts = PurePosixPath(relative).parts
+    if (
+        not parts
+        or relative != PurePosixPath(relative).as_posix()
+        or "\\" in relative
+        or "\x00" in relative
+    ):
+        raise HTTPException(422, "Chemin PDF invalide.")
+    if (
+        PurePosixPath(relative).is_absolute()
+        or any(p.startswith(".") for p in parts)
+        or not relative.lower().endswith(".pdf")
+    ):
+        raise HTTPException(422, "Chemin PDF invalide.")
+    root = Path(root)
+    current = root
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            raise HTTPException(422, "Les liens symboliques sont interdits.")
+    if root.is_symlink() or not current.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(422, "Chemin PDF invalide.")
+    return current
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".instruct-")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+class Documents:
+    def __init__(self, config, security, kb):
         self.config = config
-        self.state = DocumentState(config)
-        self.factory = factory
-        self.executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="documents"
-        )
-        self.owner = None
-        self.upload_slots = threading.BoundedSemaphore(2)
-        self.file_details = {}
+        self.security = security
+        self.kb = kb
+        self.versions = Path(config.state_path) / "versions"
+        self.versions.mkdir(exist_ok=True, mode=0o700)
 
-    def start(self):
-        self.owner = (self.state.root / "worker.lock").open("a+b")
+    def inspect(self, data):
+        if len(data) > self.config.max_pdf_bytes:
+            raise HTTPException(413, "PDF trop volumineux.")
         try:
-            portalocker.lock(self.owner, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        except portalocker.exceptions.LockException:
-            self.owner.close()
-            self.owner = None
-            raise RuntimeError(
-                "La gestion documentaire nécessite un seul processus backend."
-            ) from None
-        for job in self.state.jobs():
-            if job["state"] in ("queued", "running"):
-                job.update(
-                    state="interrupted",
-                    stage="Traitement interrompu",
-                    error="Le backend a redémarré. Relancez cette tâche.",
+            with fitz.open(stream=data, filetype="pdf") as pdf:
+                if pdf.is_encrypted or not 1 <= len(pdf) <= 10000:
+                    raise ValueError("Invalid PDF")
+                return hashlib.sha256(data).hexdigest(), len(pdf)
+        except Exception as exc:
+            raise HTTPException(422, "PDF invalide, chiffré ou trop long.") from exc
+
+    def record(self, path, data, *, actor, groups=None, action="document.discover"):
+        hashed, pages = self.inspect(data)
+        ident = document_id(path)
+        archive = self.versions / f"{hashed}.pdf"
+        if not archive.exists():
+            atomic_write(archive, data)
+        with self.security.transaction() as db:
+            previous = db.execute(
+                "SELECT current_hash FROM documents WHERE id=?", (ident,)
+            ).fetchone()
+            db.execute(
+                "INSERT INTO documents(id,path,current_hash,size,pages) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET active=1,current_hash=excluded.current_hash,"
+                "size=excluded.size,pages=excluded.pages",
+                (ident, path, hashed, len(data), pages),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO versions VALUES (?,?,?,?)",
+                (ident, hashed, utc(), pages),
+            )
+            if groups is not None:
+                self.security.set_groups(
+                    db, "document_groups", "document_id", ident, groups
                 )
-                self.state.save_job(job)
-                if job["document"]:
-                    self.state.record(job["document"], error=job["error"])
-        # Incomplete HTTP uploads are never referenced by a document record.
-        retained = {
-            r["pending"]["name"] for r in self.state.records().values() if r["pending"]
+                self.security.event(db, actor, "document.permissions", ident)
+            if (
+                previous is None
+                or previous[0] != hashed
+                or action != "document.discover"
+            ):
+                self.security.event(db, actor, action, ident)
+        return ident
+
+    def upload(self, path, data, groups, user):
+        if user["role"] not in {"admin", "manager"}:
+            raise HTTPException(403, "Gestion documentaire non autorisée.")
+        target = safe_path(self.config.documents_path, path)
+        ident = document_id(path)
+        with index_lock(self.config):
+            state = getattr(self.kb.source, "state", None)
+            if state and state.records().get(path, {}).get("pending"):
+                raise HTTPException(409, "Un remplacement attend son indexation.")
+            with self.security.connect() as db:
+                previous = db.execute(
+                    "SELECT * FROM documents WHERE id=?", (ident,)
+                ).fetchone()
+                known = {r[0] for r in db.execute("SELECT id FROM groups")}
+            if previous:
+                if not previous["active"] and user["role"] != "admin":
+                    raise HTTPException(404, "Document introuvable.")
+                if previous["active"]:
+                    self.security.require_document(ident, user, manage=True)
+                groups = None  # replacement never broadens existing permissions
+            elif (
+                not groups
+                or not set(groups) <= known
+                or (user["role"] != "admin" and not set(groups) <= set(user["groups"]))
+            ):
+                raise HTTPException(403, "Choisissez des groupes de votre périmètre.")
+            # A locally imported, unassigned file cannot be claimed by a manager.
+            if not previous and target.exists() and user["role"] != "admin":
+                raise HTTPException(404, "Document introuvable.")
+            self.inspect(data)
+            atomic_write(target, data)
+            if (
+                state
+                and previous
+                and not previous["active"]
+                and user["role"] == "admin"
+            ):
+                state.record(path, removed=0, pending=None, error=None, archived=None)
+            return self.record(
+                path,
+                data,
+                actor=user["id"],
+                groups=groups,
+                action="document.replace" if previous else "document.add",
+            )
+
+    def remove(self, ident, user):
+        with index_lock(self.config):
+            doc = self.security.require_document(ident, user, manage=True)
+            # Revoke before removing bytes; a failure leaves content inaccessible.
+            with self.security.transaction() as db:
+                db.execute("UPDATE documents SET active=0 WHERE id=?", (ident,))
+                self.security.event(db, user["id"], "document.remove", ident)
+            safe_path(self.config.documents_path, doc["path"]).unlink(missing_ok=True)
+
+    def list(self, user):
+        allowed = self.security.allowed_documents(user)
+        with self.security.connect() as db:
+            results = []
+            for row in db.execute(
+                "SELECT * FROM documents WHERE active=1 ORDER BY path"
+            ):
+                if row["path"] not in allowed:
+                    continue
+                doc = dict(row)
+                doc["groups"] = self.security.group_ids(
+                    db, "document_groups", "document_id", doc["id"]
+                )
+                doc["status"] = (
+                    "disponible"
+                    if doc["indexed_hash"]
+                    and doc["indexed_hash"] == doc["current_hash"]
+                    else "à indexer"
+                )
+                results.append(doc)
+            return results
+
+    def searchable(self, user):
+        return {
+            d["path"]: d["revision"]
+            for d in self.list(user)
+            if d["status"] == "disponible"
         }
-        for path in (self.state.root / "staging").glob("*.pdf"):
-            if path.name not in retained:
-                path.unlink()
 
-    def close(self):
-        self.executor.shutdown(wait=True)
-        if self.owner:
-            portalocker.unlock(self.owner)
-            self.owner.close()
-            self.owner = None
+    async def synchronize(
+        self, user, ident=None, *, allow_empty=False, resolve_user=None
+    ):
+        if ident is None and user["role"] != "admin":
+            raise HTTPException(
+                403, "Synchronisation globale réservée à l’administration."
+            )
+        if ident is not None:
+            doc = self.security.require_document(ident, user, manage=True)
+            scope = {doc["path"]}
+        else:
+            scope = None
 
-    @contextmanager
-    def admission(self):
-        with (self.state.root / "admission.lock").open("a+b") as handle:
-            try:
-                portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
-            except portalocker.exceptions.LockException as exc:
-                raise DocumentProblem(
-                    409, "Une opération documentaire est en cours."
-                ) from exc
-            try:
-                if any(j["state"] in ("queued", "running") for j in self.state.jobs()):
-                    raise DocumentProblem(
-                        409, "Une tâche est déjà en cours. Attendez sa fin."
-                    )
-                yield
-            finally:
-                portalocker.unlock(handle)
-
-    def resolve(self, identifier, kb):
-        _, manifests = kb.store.read()
-        names = set(self.state.records()) | set(manifests) | set(kb.source.inventory())
-        for path in names:
-            if document_id(path) == identifier:
-                return path
-        raise DocumentProblem(404, "Document inconnu.")
-
-    def accept_upload(self, staged, metadata, name, folder, replace_id, kb):
-        document = validate_path(name, folder)
-        with self.admission(), index_lock(self.config):
-            record = self.state.records().get(document, {})
-            if record.get("removed"):
-                raise DocumentProblem(
-                    409,
-                    "Ce chemin a été retiré. Choisissez un autre nom pour un nouvel ajout.",
-                )
-            if record.get("pending"):
-                raise DocumentProblem(
-                    409,
-                    "Un remplacement attend déjà son indexation. Utilisez Réessayer.",
-                )
-            # Check destination before any copy, using directory descriptors.
-            with self.state.parent(document, create=True):
-                current = self.state.current_hash(document)
-            if replace_id:
-                if self.resolve(replace_id, kb) != document or current is None:
-                    raise DocumentProblem(
-                        409,
-                        "Le document à remplacer ne correspond pas à cette destination.",
-                    )
-                # Retain the previous disk version even if it predates managed snapshots.
-                with self.state.open_document(document) as stream:
-                    self.state.preserve(document, current, stream)
-                self.state.record(
-                    document,
-                    pending={**metadata, "name": staged.name, "expected": current},
-                    error=None,
-                    info=metadata,
-                )
-            elif current is not None:
-                raise DocumentProblem(
-                    409,
-                    "Ce nom existe déjà. Choisissez explicitement Remplacer ou un autre nom.",
-                )
+        def authorize(path):
+            fresh = resolve_user() if resolve_user else user
+            if ident is None:
+                if fresh["role"] != "admin":
+                    raise HTTPException(403, "Synchronisation globale non autorisée.")
             else:
-                self.state.install(document, staged)
-                self.state.record(document, error=None, info=metadata)
-                staged.unlink()
-        return {
-            "document_id": document_id(document),
-            "document": document,
-            "replacement_pending": bool(replace_id),
-        }
+                self.security.require_document(document_id(path), fresh, manage=True)
 
-    def submit(self, kind, kb, identifier=None, *, launch=True):
-        if kind not in ("sync", "index", "remove"):
-            raise DocumentProblem(400, "Action inconnue.")
-        with self.admission(), index_lock(self.config):
-            document = self.resolve(identifier, kb) if identifier else None
-            if kind != "sync" and document is None:
-                raise DocumentProblem(400, "Document requis.")
-            if kind == "index" and self.state.records().get(document, {}).get(
-                "removed"
-            ):
-                raise DocumentProblem(
-                    409, "Document retiré : réessayez son retrait si nécessaire."
-                )
-            job = {
-                "id": uuid.uuid4().hex,
-                "kind": kind,
-                "document": document,
-                "state": "queued",
-                "stage": "En attente",
-                "processed": 0,
-                "total": None,
-                "current_document": document,
-                "created_at": now(),
-                "error": None,
-                "result": None,
-            }
-            self.state.save_job(job)
-        if launch:
-            self.executor.submit(self.execute, job)
-        return job.copy()
+        self.security.audit(user["id"], "sync.start", ident or "catalogue")
+        try:
+            # ingest holds this same lock, so pass the owned guard explicitly.
+            with index_lock(self.config):
+                inventory = self.kb.source.inventory()
+                _, previous_manifests = self.kb.store.read()
+                if (
+                    not inventory
+                    and previous_manifests
+                    and ident is None
+                    and not allow_empty
+                ):
+                    from .indexing import IndexErrorBase
 
-    def retry(self, identifier, kb):
-        job = next((j for j in self.state.jobs() if j["id"] == identifier), None)
-        if job is None:
-            raise DocumentProblem(404, "Tâche inconnue.")
-        if job["state"] not in ("failed", "interrupted"):
-            raise DocumentProblem(
-                409, "Cette tâche ne nécessite pas de nouvelle tentative."
-            )
-        return self.submit(
-            job["kind"], kb, document_id(job["document"]) if job["document"] else None
-        )
-
-    def finish_replacements(self, kb, *, only=None, exclude=()):
-        _, manifests = kb.store.read()
-        for path, record in self.state.records().items():
-            if record["removed"] or path in exclude or (only and path != only):
-                continue
-            pending = record["pending"]
-            if (
-                pending
-                and manifests.get(path, {}).get("file_hash") == pending["file_hash"]
-            ):
-                candidate = self.state.root / "staging" / pending["name"]
-                current = self.state.current_hash(path)
-                # Idempotent after death between atomic rename and journal update.
-                if current != pending["file_hash"]:
-                    self.state.install(path, candidate, expected=pending["expected"])
-                self.state.record(path, pending=None, error=None)
-                candidate.unlink(missing_ok=True)
-
-    def remove(self, document, kb):
-        record = self.state.records().get(document, {})
-        self.state.record(
-            document, removed=1
-        )  # durable search tombstone, before any destructive action
-        if not record.get("archived"):
-            try:
-                current = self.state.current_hash(document)
-            except DocumentProblem:
-                # Missing parent after an externally removed file is safe only if inventory confirms absence.
-                if document in kb.source.inventory():
-                    raise
-                current = None
-            if current:
-                with self.state.open_document(document) as stream:
-                    snapshot = self.state.preserve(document, current, stream)
-                archive = self.state.root / "archive" / document_id(document)
-                archive.mkdir(exist_ok=True)
-                target = archive / f"{current}.pdf"
-                shutil.copyfile(snapshot, target)
-                with target.open("rb") as stream:
-                    os.fsync(stream.fileno())
-                if file_hash(target) != current:
-                    raise DocumentProblem(
-                        503, "Archive non vérifiée; le fichier est conservé."
+                    raise IndexErrorBase(
+                        "EMPTY_DOCUMENTS: confirmez avec allow_empty=true."
                     )
-                with self.state.parent(document) as (fd, name):
-                    if self.state.current_hash(document) != current:
-                        raise DocumentProblem(
-                            409, "Le fichier a changé pendant le retrait. Réessayez."
-                        )
-                    os.unlink(name, dir_fd=fd)
-                    os.fsync(fd)
-                self.state.record(
-                    document, archived=str(target.relative_to(self.state.root))
+                selected = set(inventory) if scope is None else set(inventory) & scope
+                for path in sorted(selected):
+                    authorize(path)
+                    target = safe_path(self.config.documents_path, path)
+                    if target.stat().st_size > self.config.max_pdf_bytes:
+                        raise HTTPException(413, "PDF trop volumineux.")
+                result = await self.kb.ingest(
+                    allowed_documents=scope,
+                    lock_held=True,
+                    allow_empty=allow_empty or ident is not None,
+                    authorize=authorize,
                 )
-        control, manifests = kb.store.read()
-        if document in manifests:
-            kb.store.remove(document)
-        if control:
-            _, manifests = kb.store.read()
-            kb.store.collect_garbage(manifests)
-            kb.lexical.repair(kb.qdrant, kb.settings.qdrant_collection, manifests)
-            kb.lexical.collect_garbage(manifests)
-        if record.get("pending"):
-            (self.state.root / "staging" / record["pending"]["name"]).unlink(
-                missing_ok=True
-            )
-        self.state.record(document, pending=None, error=None, removed=2)
-
-    async def synchronize(self, kb, *, only=None, allow_empty=False, progress=None):
-        # Called with the shared mutation lock. Tombstones always win over disk inventory.
-        for path, record in self.state.records().items():
-            if record["removed"] == 1 and (only is None or path == only):
-                self.remove(path, kb)
-        result = await kb.ingest(
-            allow_empty=allow_empty, only=only, progress=progress, lock_held=True
-        )
-        failed_paths = {e["document"] for e in result["errors"]}
-        # Do not finalize an ambiguous manifest write until a successful retry.
-        self.finish_replacements(kb, only=only, exclude=failed_paths)
-        for path in kb.source.inventory():
-            if (only is None or path == only) and path not in failed_paths:
-                self.state.record(path, error=None)
-        for error in result["errors"]:
-            self.state.record(error["document"], error=error["code"])
-        return result
-
-    def execute(self, job):
-        async def work():
-            kb = self.factory()
-            try:
-                with index_lock(self.config):
-                    job.update(state="running", stage="Préparation")
-                    self.state.save_job(job)
-                    if job["kind"] == "remove":
-                        job.update(stage="Archivage et retrait des index", total=1)
-                        self.state.save_job(job)
-                        self.remove(job["document"], kb)
-                        job.update(processed=1, result={"removed": 1})
-                    else:
-
-                        def progress(stage, processed, total, document):
-                            job.update(
-                                stage=stage,
-                                processed=processed,
-                                total=total,
-                                current_document=document,
+                failed = {e["document"] for e in result["errors"]}
+                if hasattr(self, "manager"):
+                    self.manager.finish_replacements(
+                        self.kb, only=doc["path"] if ident else None, exclude=failed
+                    )
+                _, manifests = self.kb.store.read()
+                failed = {e["document"] for e in result["errors"]}
+                for path in selected - failed:
+                    target = safe_path(self.config.documents_path, path)
+                    self.record(path, target.read_bytes(), actor=user["id"])
+                if not result["failed"]:
+                    with self.security.transaction() as db:
+                        for row in db.execute(
+                            "SELECT id,path FROM documents WHERE active=1"
+                        ).fetchall():
+                            if row["path"] not in manifests and (
+                                scope is None or row["path"] in scope
+                            ):
+                                db.execute(
+                                    "UPDATE documents SET active=0 WHERE id=?",
+                                    (row["id"],),
+                                )
+                                self.security.event(
+                                    db, user["id"], "document.remove", row["id"]
+                                )
+                with self.security.transaction() as db:
+                    for path in selected - failed:
+                        manifest = manifests.get(path)
+                        if manifest:
+                            db.execute(
+                                "UPDATE documents SET indexed_hash=current_hash,revision=?,indexed_at=? WHERE path=?",
+                                (manifest["revision"], utc(), path),
                             )
-                            self.state.save_job(job)
-
-                        result = await self.synchronize(
-                            kb, only=job["document"], progress=progress
-                        )
-                        job["result"] = result
-                        if result["failed"] or result["cleanup_pending"]:
-                            raise DocumentProblem(
-                                503,
-                                "Traitement partiel. Consultez les documents en erreur puis réessayez; un nettoyage peut rester nécessaire.",
-                            )
-                    job.update(state="completed", stage="Terminé", finished_at=now())
-            except Exception as exc:
-                message = (
-                    str(exc)
-                    if isinstance(exc, (IndexErrorBase, DocumentProblem))
-                    else "Traitement impossible. Vérifiez les services locaux et l’espace disque, puis réessayez."
+                self.security.audit(
+                    user["id"],
+                    "sync.finish",
+                    ident or "catalogue",
+                    "partial" if result["failed"] else "success",
                 )
-                job.update(
-                    state="failed",
-                    stage="Échec du traitement",
-                    error=message,
-                    finished_at=now(),
-                )
-                if job["document"]:
-                    self.state.record(job["document"], error=message)
-            finally:
-                self.state.save_job(job)
-                await kb.close()
-
-        asyncio.run(work())
-
-    def listing(self, kb, query="", status=None, page=1, page_size=20):
-        _, manifests = kb.store.read()
-        inventory = kb.source.inventory()
-        records = self.state.records()
-        jobs = self.state.jobs()
-        active = next((j for j in jobs if j["state"] in ("queued", "running")), None)
-        rows = []
-        for path in sorted(set(inventory) | set(manifests) | set(records)):
-            record = records.get(path, {})
-            if (
-                record.get("removed")
-                and not record.get("error")
-                and not (active and active["document"] == path)
-            ):
-                continue
-            manifest = manifests.get(path, {})
-            pending = record.get("pending")
-            details = {"pages": None, "size": None, "file_hash": None}
-            if path in inventory:
-                cache = self.file_details.get(path)
-                if cache and cache[0] == (inventory[path], manifest.get("indexed_at")):
-                    details = cache[1]
-                else:
-                    try:
-                        version = kb.source.fingerprint(path)
-                        info = json.loads(record["info"]) if record.get("info") else {}
-                        pages = (
-                            manifest.get("pages")
-                            if version == manifest.get("file_hash")
-                            else info.get("pages")
-                            if version == info.get("file_hash")
-                            else None
-                        )
-                        details = {
-                            "pages": pages,
-                            "size": inventory[path][2],
-                            "file_hash": version,
-                        }
-                        self.file_details[path] = (
-                            (inventory[path], manifest.get("indexed_at")),
-                            details,
-                        )
-                    except Exception:
-                        details["size"] = inventory[path][2]
-            state = "pending" if not manifest else "available"
-            if manifest and (
-                pending or manifest.get("file_hash") != details["file_hash"]
-            ):
-                state = "modified"
-            if (
-                record.get("error")
-                or path not in inventory
-                or details["file_hash"] is None
-            ):
-                state = "error"
-            if active and (active["document"] is None or active["document"] == path):
-                state = "running"
-            if query.casefold() not in path.casefold() or (status and status != state):
-                continue
-            rows.append(
-                {
-                    "id": document_id(path),
-                    "document": path,
-                    "name": path.rsplit("/", 1)[-1],
-                    "folder": path.rsplit("/", 1)[0] if "/" in path else "",
-                    **details,
-                    "version": manifest.get("file_hash"),
-                    "indexed_at": manifest.get("indexed_at"),
-                    "state": state,
-                    "error": record.get("error"),
-                    "retired": bool(record.get("removed")),
-                    "replacement_pending": bool(pending),
-                }
+                return result
+        except BaseException:
+            self.security.audit(
+                user["id"], "sync.finish", ident or "catalogue", "failure"
             )
-        start = (page - 1) * page_size
-        return {
-            "items": rows[start : start + page_size],
-            "total": len(rows),
-            "page": page,
-            "page_size": page_size,
-            "jobs": jobs[:10],
-            "max_pdf_bytes": self.config.max_pdf_bytes,
-        }
+            raise
 
-    def source(self, identifier, version, page):
-        path = self.state.version_path(identifier, version)
-        if not path.is_file() or path.is_symlink() or file_hash(path) != version:
-            raise DocumentProblem(
-                410,
-                "Cette source n’est plus disponible dans sa version citée. Relancez la question après synchronisation.",
-            )
-        with fitz.open(path) as pdf:
-            if page < 1 or page > len(pdf):
-                raise DocumentProblem(400, "Page absente de cette version du PDF.")
-        return path
+    def read(self, ident, user, version=None):
+        doc = self.security.require_document(ident, user)
+        hashed = version or doc["current_hash"]
+        with self.security.connect() as db:
+            if not db.execute(
+                "SELECT 1 FROM versions WHERE document_id=? AND hash=?", (ident, hashed)
+            ).fetchone():
+                raise HTTPException(404, "Version introuvable.")
+        path = self.versions / f"{hashed}.pdf"
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(404, "Version introuvable.")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != hashed:
+            raise HTTPException(503, "Intégrité du PDF non vérifiée.")
+        return data
+
+
+from .document_manager import DocumentManager  # noqa: F401,E402

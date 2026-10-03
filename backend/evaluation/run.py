@@ -36,6 +36,7 @@ async def evaluate(args):
             collection = f"instruct_eval_{uuid.uuid4().hex}"
             config = Settings(
                 _env_file=None,
+                state_path=str(Path(temp) / ("state-" + corpus)),
                 documents_path=str(documents),
                 index_lock_path=str(Path(temp) / "locks"),
                 lexical_index_path=str(Path(temp) / "lexical"),

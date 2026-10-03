@@ -2,50 +2,49 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.15.4
     restart: unless-stopped
-    ports: ["127.0.0.1:6333:6333"]
     volumes: [qdrant_data:/qdrant/storage]
+    networks: [private]
 
   ollama:
     image: ollama/ollama:0.12.3
     restart: unless-stopped
-    ports: ["127.0.0.1:11434:11434"]
     volumes: [ollama_data:/root/.ollama]
+    networks: [private]
 
   backend:
     build: ./backend
     restart: unless-stopped
     env_file: .env
     environment:
-      INDEX_LOCK_PATH: /state/locks
-      DOCUMENT_STATE_PATH: /state/documents
-      DOCUMENTS_PATH: /documents
       LEXICAL_INDEX_PATH: /state/lexical
-    ports: ["127.0.0.1:8000:8000"]
+      DOCUMENT_STATE_PATH: /state/document-manager
+      STATE_PATH: /state
+      INDEX_LOCK_PATH: /state/locks
     volumes:
       - type: bind
         source: ./documents
         target: /documents
-        read_only: false
         bind:
           create_host_path: false
-      - index_locks:/state/locks
-      - document_state:/state/documents
-      - lexical_data:/state/lexical
-    read_only: true
-    tmpfs:
-      - /tmp:size=128m,mode=1777
-    security_opt: [no-new-privileges:true]
+      - app_state:/state
+      - document_state:/state/document-manager
     depends_on: [qdrant, ollama]
+    networks: [private]
 
   frontend:
     build: ./frontend
     restart: unless-stopped
     ports: ["127.0.0.1:3000:80"]
     depends_on: [backend]
+    networks: [private, entry]
 
 volumes:
   qdrant_data:
   ollama_data:
-  index_locks:
+  app_state:
   document_state:
-  lexical_data:
+
+networks:
+  private:
+    internal: true
+  entry:

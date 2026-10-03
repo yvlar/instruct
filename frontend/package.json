@@ -2,7 +2,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:browser": "node tests/browser.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
@@ -12,8 +13,10 @@
     "vite": "latest"
   },
   "devDependencies": {
-    "@playwright/test": "1.55.1",
+    "@playwright/test": "1.62.1",
     "@types/react": "latest",
-    "@types/react-dom": "latest"
-  }
+    "@types/react-dom": "latest",
+    "playwright": "1.62.1"
+  },
+  "type": "module"
 }

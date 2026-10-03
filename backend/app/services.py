@@ -112,13 +112,19 @@ class KnowledgeBase:
                 "QDRANT_COLLECTION pour ne pas mélanger les espaces vectoriels."
             )
 
-    async def write_batch(self, document, revision, fingerprint, batch, start, size):
+    async def write_batch(
+        self, document, revision, fingerprint, batch, start, size, authorize=None
+    ):
+        if authorize:
+            authorize(document)
         try:
             vectors = await self.embed_many([text for _, text in batch])
             if any(len(vector) != size for vector in vectors):
                 raise ValueError("Embedding dimension changed")
         except Exception as exc:
             raise DocumentError("EMBEDDING_FAILED") from exc
+        if authorize:
+            authorize(document)
         points = [
             models.PointStruct(
                 id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{revision}:{start + index}")),
@@ -151,7 +157,9 @@ class KnowledgeBase:
         except Exception as exc:
             raise DocumentError("LEXICAL_WRITE_FAILED") from exc
 
-    async def stage_document(self, document, file_hash, fingerprint, revision, size):
+    async def stage_document(
+        self, document, file_hash, fingerprint, revision, size, authorize=None
+    ):
         batch = []
         count = 0
         try:
@@ -159,13 +167,13 @@ class KnowledgeBase:
                 batch.append(passage)
                 if len(batch) == self.settings.embedding_batch_size:
                     await self.write_batch(
-                        document, revision, fingerprint, batch, count, size
+                        document, revision, fingerprint, batch, count, size, authorize
                     )
                     count += len(batch)
                     batch.clear()
             if batch:
                 await self.write_batch(
-                    document, revision, fingerprint, batch, count, size
+                    document, revision, fingerprint, batch, count, size, authorize
                 )
                 count += len(batch)
         except DocumentError:
@@ -180,9 +188,11 @@ class KnowledgeBase:
         self,
         *,
         allow_empty: bool = False,
+        allowed_documents=None,
         only: str | None = None,
         progress=None,
         lock_held=False,
+        authorize=None,
     ) -> dict:
         def report(stage, processed=0, total=None, document=None):
             if progress:
@@ -190,12 +200,21 @@ class KnowledgeBase:
 
         with nullcontext() if lock_held else index_lock(self.settings):
             report("Inventaire des PDF")
-            inventory = self.source.inventory()
-            if only is not None:
-                if only not in inventory:
-                    raise IndexErrorBase("DOCUMENT_MISSING: document absent.")
-                inventory = {only: inventory[only]}
+            full_inventory = self.source.inventory()
+            inventory = {
+                p: v
+                for p, v in full_inventory.items()
+                if (allowed_documents is None or p in allowed_documents)
+                and (only is None or p == only)
+            }
+            if only is not None and only not in inventory:
+                raise IndexErrorBase("DOCUMENT_MISSING: document absent.")
             control, manifests = self.store.read()
+            manifests = {
+                p: v
+                for p, v in manifests.items()
+                if allowed_documents is None or p in allowed_documents
+            }
             if not inventory and manifests and not allow_empty:
                 raise IndexErrorBase(
                     "EMPTY_DOCUMENTS: index conservé. Pour une suppression totale volontaire, "
@@ -231,6 +250,8 @@ class KnowledgeBase:
                 }
             )
             for processed, document in enumerate(sorted(inventory)):
+                if authorize:
+                    authorize(document)
                 report("Vérification du fichier", processed, len(inventory), document)
                 try:
                     try:
@@ -269,12 +290,15 @@ class KnowledgeBase:
                         fingerprint,
                         revision,
                         control["vector_size"],
+                        authorize,
                     )
                     # Verify content again before publishing a stable on-disk snapshot.
                     if self.source.fingerprint(document) != file_hash:
                         raise DocumentError("SOURCE_CHANGED")
                     if await self.embedding_identity() != identity:
                         raise DocumentError("EMBEDDING_MODEL_CHANGED")
+                    if authorize:
+                        authorize(document)
                     try:
                         report(
                             "Publication des passages",
@@ -306,12 +330,7 @@ class KnowledgeBase:
                     )
                 report("Document traité", processed + 1, len(inventory), document)
             # Never derive deletions from a changing or partially unreadable tree.
-            current_inventory = self.source.inventory()
-            if only is not None:
-                current_inventory = (
-                    {only: current_inventory[only]} if only in current_inventory else {}
-                )
-            if current_inventory != inventory:
+            if self.source.inventory() != full_inventory:
                 raise IndexErrorBase(
                     "DOCUMENTS_CHANGED: relancez la synchronisation; suppressions annulées."
                 )
@@ -337,7 +356,9 @@ class KnowledgeBase:
                     result["cleanup_pending"] = True
             return result
 
-    async def retrieve(self, question: str, *, semantic_only=False) -> list[Passage]:
+    async def retrieve(
+        self, question: str, *, semantic_only=False, authorized_documents=None
+    ) -> list[Passage]:
         with index_lock(self.settings, shared=True):
             control, manifests = self.store.read()
             excluded = (
@@ -348,13 +369,32 @@ class KnowledgeBase:
                 for path, manifest in manifests.items()
                 if path not in excluded
             }
+
+            def permitted():
+                nonlocal manifests
+                if authorized_documents is not None:
+                    allowed = authorized_documents()
+                    manifests = {
+                        p: m
+                        for p, m in manifests.items()
+                        if p in allowed
+                        and (
+                            not isinstance(allowed, dict) or m["revision"] == allowed[p]
+                        )
+                    }
+
+            permitted()
             if not manifests:
                 return []
             self.check_identity(control, await self.embedding_identity())
             self.lexical.require_ready(manifests)
+            vector = await self.embed(question)
+            permitted()
+            if not manifests:
+                return []
             hits = self.qdrant.query_points(
                 self.settings.qdrant_collection,
-                query=await self.embed(question),
+                query=vector,
                 query_filter=active_filter(manifests),
                 limit=self.settings.top_k
                 if semantic_only
@@ -386,12 +426,21 @@ class KnowledgeBase:
             ]
             return fuse(question, semantic, lexical)
 
-    async def ask(self, question: str) -> dict:
+    async def ask(self, question: str, *, authorized_documents=None) -> dict:
         candidates = select_context(
-            await self.retrieve(question),
+            await self.retrieve(question, authorized_documents=authorized_documents),
             max_passages=self.settings.top_k,
             max_chars=self.settings.context_max_chars,
         )
+
+        def permitted_passage(p):
+            return p.document in allowed and (
+                not isinstance(allowed, dict) or p.revision == allowed[p.document]
+            )
+
+        if authorized_documents is not None:
+            allowed = authorized_documents()
+            candidates = [p for p in candidates if permitted_passage(p)]
         passages = prepare_passages(candidates, question, self.settings)
         if not passages:
             return refusal()
@@ -418,6 +467,10 @@ class KnowledgeBase:
             },
         )
         response.raise_for_status()
+        if authorized_documents is not None:
+            allowed = authorized_documents()
+            if any(not permitted_passage(p) for p in passages):
+                return refusal()
         try:
             envelope = response.json()
         except ValueError:
@@ -441,9 +494,7 @@ class KnowledgeBase:
             ):
                 return refusal()
             for source in result["sources"]:
+                source["url"] = None
                 source["document_id"] = document_id(source["document"])
                 source["version"] = current[source["document"]].get("file_hash")
         return result
-
-
-knowledge_base = KnowledgeBase()

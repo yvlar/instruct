@@ -312,8 +312,7 @@ def test_user_query_cannot_inject_fts_syntax(env):
 
 
 def test_real_pdf_api_returns_verifiable_passage_metadata(env, tmp_path, monkeypatch):
-    from app import main
-    from fastapi.testclient import TestClient
+    from conftest import authenticated_app
 
     root = tmp_path / "pdfs"
     root.mkdir()
@@ -322,9 +321,10 @@ def test_real_pdf_api_returns_verifiable_passage_metadata(env, tmp_path, monkeyp
         page = pdf.new_page()
         page.insert_text((72, 72), "PRESSE ORION\n\n1. Poser le joint AB-204/X.")
         pdf.save(path)
+    env.config.documents_path = str(root)
     env.kb.source = PdfSource(str(root), 1400, 250)
-    monkeypatch.setattr(main, "knowledge_base", env.kb)
-    with TestClient(main.app) as client:
+    app, authenticated = authenticated_app(env.kb)
+    with authenticated as client:
         assert client.post("/api/ingest").json()["added"] == 1
         response = client.post("/api/ask", json={"question": "Ou poser AB-204/X?"})
         assert response.status_code == 200

@@ -13,14 +13,13 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from app import main
+from conftest import authenticated_app
 from app.config import Settings
 from app.grounding import normalize, refusal
 from app.indexing import digest
 from app.services import KnowledgeBase
 from evaluation.build_fixtures import PRESSURE, ROOT, write_pdf
 from evaluation.checks import check_answer, load_cases
-from fastapi.testclient import TestClient
 from test_indexing import FaultyQdrant
 
 
@@ -131,6 +130,7 @@ def rag(tmp_path, monkeypatch):
     qdrant = FaultyQdrant()
     config = Settings(
         _env_file=None,
+        state_path=str(tmp_path / "security"),
         documents_path=str(documents),
         index_lock_path=str(tmp_path / "locks"),
         lexical_index_path=str(tmp_path / "lexical"),
@@ -146,8 +146,8 @@ def rag(tmp_path, monkeypatch):
         qdrant=qdrant,
         http=httpx.AsyncClient(transport=httpx.MockTransport(model)),
     )
-    monkeypatch.setattr(main, "knowledge_base", kb)
-    with TestClient(main.app) as client:
+    app, authenticated = authenticated_app(kb)
+    with authenticated as client:
         yield SimpleNamespace(
             client=client, kb=kb, model=model, qdrant=qdrant, documents=documents
         )

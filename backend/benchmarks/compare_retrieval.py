@@ -167,6 +167,7 @@ async def benchmark(args):
         location.mkdir()
         config = Settings(
             _env_file=None,
+            state_path=str(location / "state"),
             documents_path=str(root),
             index_lock_path=str(location / "locks"),
             lexical_index_path=str(location / "lexical"),

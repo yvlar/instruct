@@ -18,6 +18,8 @@ root = Path(sandbox.name)
 (root / "documents").mkdir()
 config = Settings(
     _env_file=None,
+    app_origin="http://127.0.0.1:3000",
+    state_path=str(root / "security"),
     documents_path=str(root / "documents"),
     document_state_path=str(root / "state"),
     index_lock_path=str(root / "locks"),
@@ -43,6 +45,8 @@ def factory(**kwargs):
     )
 
 
-main.knowledge_base = factory()
-main.KnowledgeBase = factory
-app = main.app
+app = main.create_app(config, kb=factory())
+app.state.library.factory = factory
+app.state.security.create_user(
+    "admin", "Synthetic-password-123", "admin", bootstrap=True
+)

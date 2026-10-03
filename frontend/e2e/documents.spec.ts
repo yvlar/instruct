@@ -17,10 +17,10 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "Comment puis-je vous aider?" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Documents", exact: true }).click();
+  await page.getByLabel("Identifiant", {exact: true}).fill("admin");
+  await page.getByLabel("Mot de passe", {exact: true}).fill("Synthetic-password-123");
+  await page.getByRole("button", {name: "Se connecter"}).click();
+  await page.getByRole("button", {name: "Gestion avancée", exact:true}).click();
   await expect(
     page.getByText(
       "Votre base documentaire est prête à accueillir ses premiers PDF",
@@ -61,14 +61,14 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
     path: "../docs/screenshots/documents-mobile.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Questions", exact: true }).click();
+  await page.getByRole("button", { name: "Recherche", exact: true }).click();
   await page
     .getByLabel("Votre question")
     .fill("Quel réglage pour la machine DEMO-42?");
-  await page.getByRole("button", { name: "Rechercher →", exact: true }).click();
+  await page.getByRole("button", { name: "Rechercher", exact: true }).click();
   await expect(
     page
-      .locator(".claims")
+      .locator(".answer")
       .getByText("Regler la machine DEMO-42 a 12 unites. Procedure fictive.", {
         exact: false,
       }),
@@ -102,7 +102,7 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
     fullPage: true,
   });
   await dialog.getByRole("button", { name: "Fermer", exact: true }).click();
-  await page.getByRole("button", { name: "Documents", exact: true }).click();
+  await page.getByRole("button", { name: "Gestion avancée", exact: true }).click();
   await page.getByRole("button", { name: "Retirer", exact: true }).click();
   await expect(
     page
@@ -121,11 +121,12 @@ test("ajout, indexation, question, source exacte et retrait — ordinateur et mo
     .getByRole("button", { name: "↻ Synchroniser les documents", exact: true })
     .click();
   await expect(page.getByText("Terminé", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Questions", exact: true }).click();
+  await page.getByRole("button", { name: "Recherche", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Ouvrir la source · p. 2", exact: true }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Rechercher →", exact: true }).click();
+  await page.getByLabel("Votre question").fill("Quel réglage pour la machine DEMO-42?");
+  await page.getByRole("button", { name: "Rechercher", exact: true }).click();
   await expect(
     page.getByText(
       "Information non trouvée dans les instructions disponibles.",

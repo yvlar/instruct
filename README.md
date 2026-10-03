@@ -52,14 +52,20 @@ ni l'exactitude métier du document.
 
 ## Installation rapide
 
+Cette version exige une connexion locale et une attribution explicite des droits.
+Suivez [le guide PME](docs/PME.md) pour le premier administrateur, les groupes,
+HTTPS et la restauration. Aucun compte n’est créé par défaut.
+
+
 ```bash
 git clone https://github.com/yvlar/instruct.git
 cd instruct
 cp .env.example .env
-docker compose up -d qdrant ollama
+docker compose -f docker-compose.yml -f docker-compose.models.yml up -d qdrant ollama
 docker compose exec ollama ollama pull qwen3:8b
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose up -d --build
+docker compose up -d --build --force-recreate
+docker compose exec backend python -m app.admin create-admin votre-identifiant
 ```
 
 Pour activer explicitement le GPU NVIDIA :
@@ -71,12 +77,19 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 Vérification :
 
 ```bash
-curl http://localhost:8000/healthz
+docker compose exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/healthz').read().decode())"
 ```
 
-Ouvrez ensuite <http://localhost:3000>. La documentation interactive de l'API est disponible sur <http://localhost:8000/docs>.
+Ouvrez ensuite <http://localhost:3000>. Connectez-vous avec le compte créé localement. Les ports backend/Qdrant/Ollama ne sont pas publiés.
 
 ## Gérer les documents sans commandes curl
+
+L’onglet **Documents** permet les opérations dans le périmètre du gestionnaire
+et l’attribution des groupes par l’administrateur. **Gestion avancée**, réservé
+aux administrateurs, conserve les tâches persistantes, les filtres, la pagination
+et les remplacements préparés décrits ci-dessous. Les documents ajoutés dans
+cet onglet restent sans groupes : attribuez leurs droits dans **Documents**.
+
 
 Après le démarrage, ouvrez <http://localhost:3000> puis **Documents** :
 
@@ -85,7 +98,7 @@ Après le démarrage, ouvrez <http://localhost:3000> puis **Documents** :
    **Enregistrer le PDF**, puis **Indexer** dans sa ligne.
 3. Suivez les étapes connues et le nombre de documents traités. L’interface reste
    accessible pendant le travail. Un seul traitement modifie les documents à la fois.
-4. Quand le document est **Disponible**, revenez à **Questions**. Dans les sources,
+4. Quand le document est **Disponible**, revenez à **Recherche**. Dans les sources,
    cliquez sur **Ouvrir la source · p. N**. Le numéro reste affiché, avec des liens
    d’ouverture et de téléchargement si le lecteur PDF ignore `#page=N` sur mobile.
 5. **Remplacer** prépare un nouveau PDF au même chemin. L’ancien fichier reste en
@@ -113,7 +126,9 @@ Les documents sont exclus de Git. Les sous-dossiers suggérés sont `instruction
 `securite`, `maintenance` et `formation`. L’API historique reste utilisable :
 
 ```bash
-curl -X POST http://localhost:8000/api/ingest
+# Depuis l’interface authentifiée : Documents → Synchroniser.
+# Une intégration HTTP doit fournir le cookie, Origin et X-CSRF-Token.
+curl -X POST http://localhost:3000/api/ingest
 ```
 
 Chaque synchronisation compare le contenu SHA-256 et les paramètres d'indexation.
@@ -157,7 +172,7 @@ Pour supprimer **volontairement tous les PDF de l'index**, retirez d'abord les P
 du dossier, conservez le dossier présent et lisible, puis utilisez explicitement :
 
 ```bash
-curl -X POST 'http://localhost:8000/api/ingest?allow_empty=true'
+curl -X POST 'http://localhost:3000/api/ingest?allow_empty=true'
 ```
 
 Cette option autorise uniquement le cas vide; elle ne contourne ni une erreur de
@@ -194,7 +209,7 @@ Modifier la taille des lots ou le modèle de conversation ne la déclenche pas.
 Exemple de question :
 
 ```bash
-curl -X POST http://localhost:8000/api/ask \
+curl -X POST http://localhost:3000/api/ask \
   -H "Content-Type: application/json" \
   -d '{"question":"Quelle est la procédure de démarrage?"}'
 ```
@@ -206,12 +221,12 @@ curl -X POST http://localhost:8000/api/ask \
 | `GET` | `/healthz` | Vérifie que l'API répond |
 | `POST` | `/api/ingest` | Synchronise les PDF; `?allow_empty=true` autorise un dossier volontairement vidé |
 | `POST` | `/api/ask` | Extraits vérifiés, claims et sources avec identifiant, version et page |
-| `GET` | `/api/documents` | Liste : `q`, `status`, `page`, `page_size`, tâches récentes |
-| `PUT` | `/api/documents` | Corps PDF brut, `Content-Type: application/pdf`; `name`, `folder`, `replace_id` explicite |
-| `POST` | `/api/documents/sync` | Lance une synchronisation; réponse 202 avec la tâche |
-| `POST` | `/api/documents/{id}/index` | Lance l’indexation incrémentale d’un document |
-| `POST` | `/api/documents/{id}/remove` | Lance l’archivage et le retrait |
-| `POST` | `/api/document-jobs/{id}/retry` | Relance une tâche échouée ou interrompue |
+| `GET` | `/api/library/documents` | Liste : `q`, `status`, `page`, `page_size`, tâches récentes |
+| `PUT` | `/api/library/documents` | Corps PDF brut, `Content-Type: application/pdf`; `name`, `folder`, `replace_id` explicite |
+| `POST` | `/api/library/documents/sync` | Lance une synchronisation; réponse 202 avec la tâche |
+| `POST` | `/api/library/documents/{id}/index` | Lance l’indexation incrémentale d’un document |
+| `POST` | `/api/library/documents/{id}/remove` | Lance l’archivage et le retrait |
+| `POST` | `/api/library/document-jobs/{id}/retry` | Relance une tâche échouée ou interrompue |
 | `GET` | `/api/documents/{id}/source` | Vérifie la `version` et la `page` avant ouverture |
 | `GET` | `/api/documents/{id}/file` | PDF exact, paramètres `version`, `page`, `download=true` facultatif |
 
@@ -220,13 +235,13 @@ curl -X POST http://localhost:8000/api/ask \
 | Emplacement | Contenu | Persistance |
 |---|---|---|
 | `./documents` → `/documents` | PDF courants, montage désormais en lecture-écriture | Dossier de l’hôte |
-| `document_state` → `/state/documents` | Registre SQLite, tâches, remplacements préparés, versions PDF et archives | Volume Docker nommé |
-| `index_locks` → `/state/locks` | Verrous de mutation de l’index | Volume Docker nommé |
-| `lexical_data` → `/state/lexical` | Index SQLite FTS5, reconstructible depuis Qdrant | Volume Docker nommé |
+| `app_state` → `/state/document-manager` | Registre SQLite, tâches, remplacements préparés, versions PDF et archives | Volume Docker nommé |
+| `app_state` → `/state/locks` | Verrous de mutation de l’index | Volume Docker nommé |
+| `app_state` → `/state/lexical` | Index SQLite FTS5, reconstructible depuis Qdrant | Volume Docker nommé |
 | `qdrant_data` | Passages et manifestes Qdrant | Volume Docker nommé |
 | `ollama_data` | Modèles locaux | Volume Docker nommé |
 
-Sauvegardez ensemble les PDF, `document_state` et Qdrant. `docker compose down` conserve
+Utilisez les commandes cohérentes de sauvegarde/restauration du [guide PME](docs/PME.md), incluant comptes, droits et audit. `docker compose down` conserve
 les volumes; **`down -v` les détruit**, y compris les archives et versions citées.
 Ne placez jamais `DOCUMENT_STATE_PATH` à l’intérieur de `DOCUMENTS_PATH`.
 Le système de fichiers de l’image backend est en lecture seule; seuls les montages
@@ -247,7 +262,7 @@ chemin ne peut plus alimenter la recherche. **Réessayer** termine l’archivage
 nettoyage; un fichier recopié au même chemin reste exclu. Pour un nouvel ajout après
 retrait, choisissez explicitement un autre nom. La restauration d’archive n’a pas
 encore d’interface. Les PDF archivés se trouvent sous `archive/<identifiant>/` dans
-`document_state`; le registre conserve leur chemin documentaire d’origine.
+`app_state`; le registre conserve leur chemin documentaire d’origine.
 
 Les sources utilisent `document_id` et `version`; aucune route de lecture n’accepte
 un chemin arbitraire. La copie exacte est servie ou une erreur **410** explique son

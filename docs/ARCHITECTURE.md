@@ -162,3 +162,18 @@ ancien index et ne change pas le modèle associé à la collection.
 - Les erreurs retournées ne contiennent ni texte de PDF ni exception fournisseur brute.
 - Les ports sont liés à `127.0.0.1` par défaut; l'application n'offre aucune authentification.
 - Les volumes Docker conservent localement modèles, manifeste et vecteurs.
+
+## Sessions et périmètres PME
+
+`security.py` fournit SQLite, Argon2 et les sessions révocables. Le backend est
+créé par `app.main:create_app --factory`; toutes les routes sensibles vérifient
+la session. Les candidats vectoriels et FTS5 sont filtrés par les révisions
+calculées côté serveur depuis les groupes. `grounding.py` valide les extraits
+structurés; aucune réponse n’est conservée si ses droits changent en génération.
+
+`documents.py` porte le catalogue ACL et les opérations par périmètre.
+`document_manager.py` conserve le worker et son journal de tâches. Les routes
+`/api/library/*` et Gestion avancée sont administratives; les tâches revérifient
+la session. Ces deux interfaces partagent les PDF, index et verrous.
+La sauvegarde de format 2 inclut leurs états; FTS5 est reconstruit à la restauration.
+Voir [PME](PME.md) pour l’installation et les limites.

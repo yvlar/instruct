@@ -51,6 +51,7 @@ class ScriptedOllama(FakeOllama):
 def env(tmp_path):
     config = Settings(
         _env_file=None,
+        state_path=str(tmp_path / "security"),
         documents_path=str(tmp_path / "docs"),
         index_lock_path=str(tmp_path / "locks"),
         lexical_index_path=str(tmp_path / "lexical"),
@@ -358,16 +359,19 @@ def test_source_retrieved_but_not_in_model_context_is_rejected(env):
 
 @pytest.mark.parametrize("accepted", [True, False])
 def test_http_api_serialization_usable_by_frontend(env, monkeypatch, accepted):
-    from app import main
+    from conftest import authenticated_app
 
     run(env.kb.ingest())
     if not accepted:
         env.ollama.select = lambda p: {"status": "insufficient", "answer": []}
-    monkeypatch.setattr(main, "knowledge_base", env.kb)
+    app, authenticated = authenticated_app(env.kb)
 
     async def call():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url=env.config.app_origin,
+            cookies=authenticated.cookies,
+            headers=authenticated.headers,
         ) as client:
             response = await client.post(
                 "/api/ask", json={"question": "Où ranger les cartes bleues?"}
@@ -389,15 +393,18 @@ def test_http_api_serialization_usable_by_frontend(env, monkeypatch, accepted):
 
 
 def test_provider_failure_stays_sanitized_http_503(env, monkeypatch):
-    from app import main
+    from conftest import authenticated_app
 
     run(env.kb.ingest())
     env.ollama.chat_status = 500
-    monkeypatch.setattr(main, "knowledge_base", env.kb)
+    app, authenticated = authenticated_app(env.kb)
 
     async def call():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url=env.config.app_origin,
+            cookies=authenticated.cookies,
+            headers=authenticated.headers,
         ) as client:
             response = await client.post(
                 "/api/ask", json={"question": "Où ranger les cartes bleues?"}

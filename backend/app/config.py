@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1400, ge=100, le=16000)
     chunk_overlap: int = Field(default=250, ge=0)
     index_lock_path: str = "/tmp/instruct-locks"
-    document_state_path: str = ".instruct-state"
+    document_state_path: str = ""
     max_pdf_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=1024**3)
     max_context_chars: int = Field(default=3200, ge=200, le=24000)
     max_passage_chars: int = Field(default=1400, ge=100, le=16000)
@@ -32,8 +32,45 @@ class Settings(BaseSettings):
             )
         return self
 
+    state_path: str = "/state"
+    app_origin: str = "http://localhost:3000"
+    cookie_secure: bool = False
+    session_seconds: int = Field(default=28800, ge=60, le=604800)
+    login_attempts: int = Field(default=5, ge=1, le=100)
+    audit_retention_days: int = Field(default=90, ge=1, le=3650)
+
+    @model_validator(mode="after")
+    def valid_network(self):
+        from urllib.parse import urlsplit
+        from pathlib import Path
+
+        if not self.document_state_path:
+            self.document_state_path = str(Path(self.state_path) / "document-manager")
+        if not self.lexical_index_path:
+            self.lexical_index_path = str(Path(self.state_path) / "lexical")
+
+        origin = urlsplit(self.app_origin)
+        if (
+            origin.scheme not in {"http", "https"}
+            or not origin.netloc
+            or origin.path
+            or origin.query
+            or origin.fragment
+            or origin.username
+        ):
+            raise ValueError("APP_ORIGIN doit être une origine sans chemin")
+        if origin.scheme == "http" and origin.hostname not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise ValueError("HTTPS est requis hors localhost")
+        if origin.scheme == "https" and not self.cookie_secure:
+            raise ValueError("COOKIE_SECURE=true est requis avec HTTPS")
+        return self
+
     min_score: float = Field(default=0.35, ge=-1, le=1)
-    lexical_index_path: str = "./data/lexical"
+    lexical_index_path: str = ""
     retrieval_candidates: int = Field(default=24, ge=1, le=100)
     context_max_chars: int = Field(default=8000, ge=512, le=64000)
     top_k: int = Field(default=4, ge=1, le=20)

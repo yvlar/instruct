@@ -16,6 +16,7 @@ class Source(BaseModel):
     version: str | None = None
     revision: str
     fingerprint: str
+    url: str | None = None
 
 
 class Claim(BaseModel):

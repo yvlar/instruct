@@ -35,12 +35,13 @@ documents/**
 qdrant_storage/
 ollama_data/
 
-# Registre documentaire, archives et versions locales
+state/
+backups/
+certs/
+*.tar.gz
+
+# Index dérivés et sorties navigateur
 .instruct-state/
-frontend/test-results/
-frontend/playwright-report/
-# Local lexical index and benchmark outputs
 data/
-benchmark-results/
-*.sqlite3
-evaluation-results/
+test-results/
+playwright-report/
