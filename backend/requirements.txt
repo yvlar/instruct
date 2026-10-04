@@ -7,6 +7,7 @@ httpx==0.28.1
 pydantic-settings==2.15.0
 python-multipart==0.0.32
 
-portalocker==4.4.0
+# qdrant-client 1.19.1 requires portalocker>=2.7.0,<4.0.
+portalocker==3.2.0
 argon2-cffi==25.1.0
 itsdangerous==2.2.0
