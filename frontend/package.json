@@ -13,10 +13,10 @@
     "vite": "latest"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
+    "@playwright/test": "1.63.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "playwright": "1.62.1"
+    "playwright": "1.63.0"
   },
   "type": "module"
 }
