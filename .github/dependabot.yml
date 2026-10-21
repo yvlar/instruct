@@ -4,9 +4,18 @@ updates:
     directory: /backend
     schedule:
       interval: weekly
+    # Revisit this bound only when the selected Qdrant client supports Portalocker 4.
+    ignore:
+      - dependency-name: portalocker
+        versions: [">=4.0"]
     groups:
+      qdrant-storage:
+        patterns: ["qdrant-client", "portalocker"]
+        update-types: ["minor", "patch"]
       python-dependencies:
         patterns: ["*"]
+        exclude-patterns: ["qdrant-client", "portalocker"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: /frontend

@@ -25,6 +25,8 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - name: Installer les dépendances
         run: pip install -r backend/requirements-dev.txt
+      - name: Vérifier la cohérence des dépendances installées
+        run: python -m pip check
       - name: Tester le backend
         working-directory: backend
         run: python -m pytest -q

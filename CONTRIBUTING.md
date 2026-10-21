@@ -25,9 +25,22 @@ docker compose up -d --build
 python -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements-dev.txt
+python -m pip check
 cd backend
 pytest -q
 ```
+
+### Mises à jour Python
+
+`qdrant-client==1.19.1` exige `portalocker>=2.7.0,<4.0`; conserver
+`portalocker==3.2.0` tant que cette contrainte s'applique. Dependabot ignore
+Portalocker 4 et les versions suivantes et regroupe séparément Qdrant et
+Portalocker. Les autres mises à jour mineures/correctives restent groupées;
+les versions majeures sont proposées séparément pour faciliter leur validation.
+Ne retirer la règle `ignore` qu'après vérification des métadonnées d'une nouvelle
+version de Qdrant et passage des quatre jobs CI (backend, frontend, browser,
+Docker). La résolution pip, `pip check` et les parcours navigateur doivent rester
+valides; ne pas désactiver les tests pour accepter une mise à jour.
 
 ### Frontend
 
