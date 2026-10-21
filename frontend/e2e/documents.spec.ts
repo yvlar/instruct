@@ -2,10 +2,11 @@ import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 
+// The legacy fitz import writes a warning to stdout, corrupting this PDF stream.
 const pdf = execFileSync("python", [
   "-c",
-  `import fitz,sys
-with fitz.open() as pdf:
+  `import pymupdf,sys
+with pymupdf.open() as pdf:
  pdf.new_page().insert_text((72,72), "Document fictif pour la demonstration Instruct IA.")
  pdf.new_page().insert_text((72,72), "Regler la machine DEMO-42 a 12 unites. Procedure fictive.")
  sys.stdout.buffer.write(pdf.tobytes())`,
